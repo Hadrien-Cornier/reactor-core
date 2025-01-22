@@ -1,151 +1,268 @@
-# Introduction to Reactive Programming with Project Reactor
+# OUTLINE
 
-This document provides an introductory overview of reactive programming as seen through Project Reactor and Spring. We explore how reactive programming addresses the challenges of handling many concurrent requests and discuss high-level concepts, from the Reactive Manifesto to the internal event-loop model that drives concurrency in a Spring-based application.
+TODO : make outline consistent
+TODO : add Backpressure
+TODO : Explain simple overview of Project Reactor
+
+Introduction: The Concurrency Challenge
+• State the high-level question: How do we handle many concurrent requests efficiently?
+Process-Per-Request Model
+2.1 What Is a Process?
+2.2 Past Approaches (e.g., CGI, Prefork in Apache)
+2.3 Where It Breaks Down (Resource overhead, slow context switching, limited scalability)
+Enter Threads
+3.1 What Is a Thread?
+3.2 Thread Resources (stack memory, CPU cycles)
+3.3 Thread Limits & Overheads
+3.4 Thread-Per-Request Model
+– Advantages vs. Past Approaches
+– Why It Still Fails Under Heavy Load (context switching, memory usage, thread starvation)
+Event Loops
+4.1 The Rationale for Event Loops (fewer threads, better I/O concurrency)
+4.2 How an Event Loop Works (OS signals, callback registries, single/multi-threaded variants)
+4.3 Advantages & Drawbacks (single-threaded bottleneck, concurrency complexities, offloading CPU-intensive tasks)
+Spring’s Event-Loop Model
+5.1 Netty Under the Hood
+5.2 How Spring WebFlux Uses Event Loops for I/O
+5.3 Request Flow in a Reactive Spring Application (brief high-level walkthrough)
+Enter Reactive Programming
+6.1 The Reactive Manifesto & Its Principles
+– Responsive, Resilient, Elastic, Message-Driven
+6.2 Reactive Streams Specification (Publisher, Subscriber, Subscription, Processor)
+6.3 Project Reactor Overview
+– Key Operators (map, flatMap, filter)
+– Lazy evaluation (activation on subscribe)
+Advantages & Disadvantages of Project Reactor
+7.1 Benefits (optimal resource usage, concurrency, fewer idle threads)
+7.2 Trade-Offs (steep learning curve, debugging complexity, mindset shift)
+Example Code
+• Show a minimal Reactor flow (Flux / Mono usage)
+• Demonstrate lazy execution until subscribe()
+Summary & Next Steps
+• Summarize the evolution from processes to threads to event loops
+• Emphasize how Reactor builds on the event-loop model
+• Preview deeper dives: advanced operators, debugging, best practices
+
+# 1. Introduction: The Concurrency Challenge
+
 
 ---
 
-## 1. The Reactive Manifesto in Brief
+This training addresses the overarching challenge: How do we handle many concurrent requests efficiently without exhausting system resources?
 
-• The Reactive Manifesto outlines principles for modern systems: Responsive, Resilient, Elastic, and Message-Driven.  
-• “Responsive” means reacting to users in a timely manner.  
-• “Resilient” systems stay operational under failure.  
-• “Elastic” systems scale up or down to handle variable loads.  
-• “Message-Driven” designs rely on asynchronous message passing to avoid blocking.
+# 2. Process-Per-Request Model
 
-These guiding principles help us build software that handles concurrency without overwhelming resources.
+## 2.1 What Is a Process?
+A process is an instance of a running program. It has its own dedicated memory space (including heap and stack), file descriptors, and OS-level resources. Early solutions spawned a process for each request, as shown below.
 
 ---
 
-## 2. Historical Context: Thread-Per-Request Model
+## 2.2 Past Approaches: CGI & Prefork (Historical Context)
 
-In the past, Java web servers handled each request with a dedicated OS thread. For small numbers of concurrent requests, this was fine. But large traffic:
-• Consumed huge memory (thread stacks)  
-• Caused high context-switching overhead in the OS  
-• Led to thread starvation under load  
+In older systems (e.g., early Unix servers):
+- **CGI scripts**: [A child process handled dynamic content for each request](#CGI).  
+- **Prefork**: [A pool of processes was ready to take connections (Apache HTTPD)](#Prefork).
 
-Although simple to conceptualize, the thread-per-request model struggles with systems requiring high concurrency.
+Processes are expensive in memory usage and [context switching](#context-switching-overhead), eventually hitting scaling limits.
 
 ---
 
-## 3. Introduction to Reactive Programming
+## 2.3 Where It Breaks Down
+• High resource overhead (each process has its own memory space).  
+• [Context switching](#context-switching-overhead) among processes is costly.  
+• Frequent forking or process creation depletes resources.
 
-Reactive programming is a paradigm that:
-• Builds on asynchronous, non-blocking I/O  
-• Delivers data and signals (e.g., completion or errors) through **Publishers**  
-• Allows consumers, known as **Subscribers**, to process this data on an event-driven basis  
-• Encourages a declarative style of composing transformations  
+---
+
+# 3. Enter Threads
+
+## 3.1 What Is a Thread?
+A thread is a subdivision of a process, sharing the same memory but maintaining its own stack and register states. Threads are lighter than processes and pave the way for concurrency with less overhead than process-per-request.
+
+## 3.2 Thread Resources, Limits, & Overheads
+- **Stack Memory**: Each thread has a stack (e.g., 256KB – 1MB in many JVMs).  
+- **CPU**: Time spent creating/destroying threads, plus [context switching](#context-switching-overhead).  
+- **Limits**: OS constraints and practical overhead keep thread counts from growing indefinitely.
+
+
+## 3.3 Thread-Per-Request Model
+Many traditional Java servers mapped each request to its own thread. Under moderate load, this was workable. But at scale:
+• Huge memory consumption (lots of thread stacks).  
+• High [context-switch](#context-switching-overhead) overhead.  
+• Possible thread starvation.
+
+---
+
+# 4. Event Loops
+Event loops address these problems by using a small pool of threads to handle many concurrent I/O operations. Instead of blocking a separate thread per request, an event loop runs callbacks triggered by OS signals (e.g., data ready to read).
+
+## 4.1 Rationale for Event Loops
+• Fewer threads handle many connections via asynchronous I/O.  
+• Lower memory usage (few thread stacks).  
+• Reduced context switching vs. thread-per-request.
+
+## 4.2 How an Event Loop Works
+- Waits for OS signals (epoll, kqueue, IOCP).  
+- Picks a callback from a queue when I/O is ready.  
+- Executes callbacks sequentially (single-thread model) or across a small pool.  
+- Non-blocking tasks keep loops free for more I/O.
+
+[More Details](#more-about-event-loops)
+
+## 4.3 Advantages & Drawbacks
+**Advantages**: Minimal threads, high I/O throughput, simpler concurrency (less locking).  
+**Drawbacks**: CPU-bound tasks must not block the loop; more complex code design (callbacks).
+
+---
+
+# 5. Spring's Event-Loop Model
+
+## 5.1 Netty Under the Hood
+Spring WebFlux relies on Netty for its networking. Netty uses multiple event loop groups to handle inbound/outbound I/O across available CPU cores.
+
+## 5.2 How Spring WebFlux Uses Event Loops
+- On each I/O event, the Netty loop triggers Reactor operators or passes control to a Scheduler if blocking tasks are offloaded.
+
+## 5.3 Request Flow in a Reactive Spring Application
+1. OS signals new request.  
+2. Netty decodes the request.  
+3. Reactor pipeline processes data asynchronously.  
+4. If I/O (DB calls, ML inference) is needed, it returns immediately, letting the loop serve other requests.  
+5. Once data is ready, the loop completes the response.
+
+---
+
+# 6. Enter Reactive Programming
+
+## 6.1 The Reactive Manifesto & Its Principles
+- Responsive, Resilient, Elastic, Message-Driven.  
+- Sets guidelines on how modern systems should behave under load and failure.
+
+## 6.2 Reactive Streams Specification
+- Defines Publisher, Subscriber, Subscription, Processor.  
+- Ensures [backpressure](#Backpressure) and async I/O across different libraries.
 
 Two popular Java libraries are:
 • **Project Reactor** (part of the Spring ecosystem)  
 • **RxJava** (inspired by Reactive Extensions from Microsoft)
 
-Both implement the Reactive Streams specification. Reactor is the library we’ll focus on.
+
+## 6.3 Project Reactor Overview
+- Part of Spring ecosystem, tightly integrated with WebFlux.  
+- Uses non-blocking operators (map, flatMap) to transform data.  
+- Lazy evaluation: Nothing runs until `subscribe()`.
+- Developers see concurrency as a built-in property of Reactor operators rather than manually 
+juggling threads.
 
 ---
 
-## 4. Basic Reactive Interfaces
-
-Reactive Streams defines four main interfaces:
-
-1. **Publisher<T>**  
-   Emits a sequence of items (or signals) of type T to its **Subscriber**.
-   
-2. **Subscriber<T>**  
-   Listens for items from the Publisher. Methods:  
-   • onSubscribe(Subscription s)  
-   • onNext(T item)  
-   • onError(Throwable t)  
-   • onComplete()
-
-3. **Subscription**  
-   Controls the relationship between Publisher and Subscriber.  
-   Allows requesting items or canceling the flow.
-
-4. **Processor<T,R>**  
-   A hybrid of Publisher & Subscriber. Consumes and emits data, often used as a bridge.
-
-Operators (e.g., `map`, `flatMap` in Reactor) build on these concepts. A chain of operators transforms the data as events flow from Publisher to Subscriber.
+# 7. Advantages & Disadvantages of Project Reactor
+- **Advantages**: Fewer idle threads, high concurrency, scales easily with I/O.  
+- **Drawbacks**: Debugging async flows can be harder; requires a paradigm shift.
 
 ---
 
-## 5. Advantages of Project Reactor
-
-Compared to traditional blocking approaches:
-• Optimized resource usage by avoiding idle threads during blocking I/O  
-• Scales to large numbers of concurrent connections  
-• Minimizes overhead from context switching  
-• Integrates deeply with Spring WebFlux and other frameworks  
-
-Disadvantages:
-• Debugging can be trickier due to async flows  
-• Familiar synchronous paradigms (thread locals, blocking) need adaptation  
-• Requires a mindset shift for developers
+# 8. Summary & Next Steps
+- Summarize: Evolved from process-per-request → thread-per-request → event loops + reactive.  
+- Reactor harnesses event loops for non-blocking concurrency.  
+- Next steps: deeper exploration of advanced operators, debugging, scheduling strategies.
 
 ---
 
-## 6. Simplified Example Code
+# APPENDIX
 
-Below is a small snippet illustrating a typical Reactor flow:
+### CGI
+- **Early CGI scripts** (Common Gateway Interface). A CGI script is an external program run by 
+the web server to generate dynamic responses. When a request arrived that needed dynamic content, 
+the server would "fork" a child process and execute the CGI program. Once the program finished 
+generating output (HTML, for instance), the process would terminate. This approach was simpler to 
+implement in early web servers but created significant overhead due to frequent process creation 
+and teardown.
 
-```java
-import reactor.core.publisher.Flux;
-public class ReactorExample {
-public static void main(String[] args) {
-    Flux<String> names = Flux.just("Alice", "Bob", "Charlie")
-    .map(name -> name.toUpperCase())
-    .filter(name -> name.startsWith("C"));
-    names.subscribe(
-    value -> System.out.println("Received: " + value),
-    error -> System.err.println("Error: " + error),
-    () -> System.out.println("Completed.")
-    );
-    }
-}
-```
+### Prefork
+- **Prefork models** in some HTTP servers (e.g., older versions of Apache HTTPD). Under this 
+model, the server would start ("prefork") a pool of child processes on startup. Each child 
+process waited for incoming connections. When a request came in, the server assigned it to one of 
+these existing processes, avoiding the overhead of creating a fresh process for every request. 
+Even though this was more efficient than forking a new process on every request, each child still 
+consumed more resources than a thread. Handling hundreds or thousands of connections could lead 
+to huge memory usage because every process had its own memory space, file descriptors, etc.
 
+### Context Switching Overhead
 
-What happens:
-1. `Flux.just(...)` is the Publisher that emits three names.  
-2. `map(...)` transforms each string to uppercase.  
-3. `filter(...)` allows only names starting with “C.”  
-4. `subscribe(...)` is the Subscriber consuming the data.
+• **Definition**: Context switching is when the CPU switches from executing one thread to 
+another.  
+• **Overhead**: Every switch involves saving and loading CPU registers, updating memory maps, and 
+cache invalidation. Because each thread can have its own state (registers, stack pointer, program 
+counter, etc.), the operating system must temporarily store these details and load the next 
+thread's equivalent details. Additionally, some or all of the CPU's internal caches (such as data 
+caches and translation lookaside buffers, or TLBs) may be flushed or become outdated. A context 
+switch can also disrupt the CPU's instruction pipeline, forcing it to refill from scratch. All 
+these factors contribute to time spent not doing useful work.  
+  
+Frequent context switches are particularly detrimental to performance because:
+1. **CPU Time Spent in Scheduling**: The OS scheduler must decide which thread to run next, 
+adding overhead for scheduling algorithms.  
+2. **Cache Miss Penalties**: Once the switch occurs, the new thread's memory references may not 
+be in the cache anymore, leading to additional stalls.  
+3. **Pipeline Flushes**: Modern CPUs rely on deep pipelines and speculative execution. Switching 
+threads can hamper these optimizations, forcing them to restart.  
+4. **RAM and TLB Overheads**: Accessing memory pages for the newly scheduled thread can force TLB 
+reloads, further slowing execution.  
+  
+When context switching happens rarely (for example, if long-running tasks occupy a thread for a 
+while), the overhead is less noticeable. However, under highly concurrent loads with hundreds or 
+thousands of threads constantly preempting each other, context switching can snowball into a 
+major performance bottleneck.
 
----
+### More About Event Loops
 
-## 7. Event Loops in Reactive Systems
-
-### 7.1 The Role of the Event Loop
-
-• In many reactive frameworks, a small pool of threads (often called event loops) handle I/O readiness events.  
-• When new data arrives or a write becomes possible, the OS notifies the library through a callback.  
-• The library schedules the logic in that callback, possibly passing it to an available thread from the event loop or a specialized scheduler.
-
-### 7.2 Spring WebFlux and Reactor
-
-Spring WebFlux uses the Reactor Netty runtime by default. Each Netty event loop thread:
-• Waits for read/write readiness from the OS  
-• Dispatches the request to the Reactor pipeline for processing  
-• Switches rapidly among requests without costly thread per connection  
-
-Developers see concurrency as a built-in property of Reactor operators rather than manually juggling threads.
-
-### 7.3 Callback Registry, Context Switching, and Why Event Loops Are Fast
-
-Event loops do more than just listen for OS I/O interrupts (epoll on Linux, kqueue on macOS, IOCP on Windows). They also maintain an internal "callback registry." When the OS signals that a socket is ready for reading or writing, the event loop looks up which callback should handle this event. It then rapidly passes control to that callback. Because event loops typically reuse a small number of threads, the overhead of spawning and destroying threads is avoided. This design significantly reduces context switching cost compared to the traditional "one-thread-per-request" model.
+Event loops do more than just listen for OS I/O interrupts (epoll on Linux, kqueue on macOS, IOCP 
+on Windows). They also maintain an internal "callback registry." When the OS signals that a 
+socket is ready for reading or writing, the event loop looks up which callback should handle this 
+event. It then rapidly passes control to that callback. Because event loops typically reuse a 
+small number of threads, the overhead of spawning and destroying threads is avoided. This design 
+significantly reduces context switching cost compared to the traditional "one-thread-per-request" 
+model.
 
 Behind the scenes:
 • The event loop pulls pending callbacks from an internal queue.  
 • Each callback is associated with a reactive operation or chain of operations.  
-• The loop executes these callbacks sequentially on the same thread, moving on to new callbacks as soon as one completes or yields.  
-• If a blocking operation is needed, Reactor can shift execution to another Scheduler with more suitable threads (e.g., boundedElastic), preventing the event loop from becoming stuck.
+• The loop executes these callbacks sequentially on the same thread, moving on to new callbacks 
+as soon as one completes or yields.  
+• If a blocking operation is needed, Reactor can shift execution to another Scheduler with more 
+suitable threads (e.g., boundedElastic), preventing the event loop from becoming stuck.
+
+### Backpressure
+
+TODO ADD Backpressure
 
 
-### 7.4 Lazy Evaluation and Activation on Subscribe
+### Schedulers For Shifting Execution to Another Thread
+
+In Project Reactor, a Scheduler controls which thread(s) will run a given piece of reactive 
+logic. By default, publishers run their emissions on the current thread (often the event loop). 
+However, you can use operators like `publishOn` or `subscribeOn` to move downstream or upstream 
+processing to another Scheduler. For example, if a publisher returns in your code and you use `.
+subscribeOn(Schedulers.boundedElastic())`, future emissions in that chain may run on a different 
+thread from the boundedElastic pool. This approach keeps the main event loop free of long-running 
+tasks.
+
+In short:
+- An event loop is fast because it avoids per-request thread creation and only works with 
+callbacks.  
+- If complex or blocking tasks are necessary, Reactor's Schedulers help you shift execution away 
+from the event loop.  
+- This model reduces overhead while still providing flexible concurrency when processing I/O 
+events or data transformations.
+
+
+### Lazy Evaluation and Activation on Subscribe
 
 One core principle of reactive programming is that nothing actually happens until you call
 <code>subscribe()</code>. Building a chain of operators (like <code>map</code>, <code>filter</code>, <code>flatMap</code>) does not
 execute any I/O or data transformations by itself. Instead, it constructs a pipeline of
-“instructions” for how data should be processed once it is requested.
+"instructions" for how data should be processed once it is requested.
 
 Here is a basic example:
 
@@ -180,60 +297,3 @@ thread designated by a <code>Scheduler</code>), applying transformations to each
 like <code>flatMap</code> with an I/O call may break the flow into callbacks handled by an event loop or a separate scheduler
 (for example, <code>boundedElastic</code>), but the fundamental principle remains: no operator actually fires until
 <code>subscribe()</code> triggers data demand.
-
----
-
-### 7.5 Shifting Execution to Another Thread: Schedulers
-
-In Project Reactor, a Scheduler controls which thread(s) will run a given piece of reactive logic. By default, publishers run their emissions on the current thread (often the event loop). However, you can use operators like `publishOn` or `subscribeOn` to move downstream or upstream processing to another Scheduler. For example, if a publisher returns in your code and you use `.subscribeOn(Schedulers.boundedElastic())`, future emissions in that chain may run on a different thread from the boundedElastic pool. This approach keeps the main event loop free of long-running tasks.
-
-In short:
-- An event loop is fast because it avoids per-request thread creation and only works with callbacks.  
-- If complex or blocking tasks are necessary, Reactor’s Schedulers help you shift execution away from the event loop.  
-- This model reduces overhead while still providing flexible concurrency when processing I/O events or data transformations.
-
----
-
-## 8. A High-Level Request Flow in Spring Reactor
-
-1. **Incoming Request**  
-   The OS signals an open connection or incoming data on a socket. A Netty event loop picks up the event.  
-2. **I/O Parsing**  
-   Netty decodes HTTP bytes into an HTTP request object.  
-3. **Reactor Pipeline**  
-   The request flows into a chain of Reactor operators (e.g., route matching, data parsing).  
-4. **Database or ML Inference Calls**  
-   Instead of blocking, we return a Publisher that eventually yields results. Meanwhile, the event loop can handle other requests.  
-5. **Response Emission**  
-   Once the publisher has data, it signals the event loop to write back.  
-6. **Completion**  
-   The final onComplete signal closes the reactive flow for that request.
-
-All these steps happen on a minimal number of threads, typically fewer than the number of cores.
-
----
-
-## 9. Under the Hood: OS Notifications
-
-At a deeper level:
-• The OS (via epoll on Linux, kqueue on macOS, or IOCP on Windows) informs Netty that a socket is readable/writable.  
-• Netty processes these readiness events in an event loop.  
-• Reactor’s callbacks handle the logic on top of Netty’s event loop or pass work to extra schedulers as needed.  
-• This design avoids idle threads. Instead of blocking, threads only run code when data is present or produce results when requested.
-
----
-
-## 10. Conclusion and Next Steps
-
-Reactive programming in Java, especially with Project Reactor, rethinks concurrency by removing dedicated blocking threads and embracing asynchronous, non-blocking flows:
-• A single event loop can process many can-do tasks concurrently.  
-• Light on overhead, straightforward scaling with fewer hardware constraints.  
-• Requires you to structure the logic in pipelines of operators rather than sequential blocking code.  
-
-Our next presentation will dive deeper into:
-• Best practices for using Reactor effectively  
-• Advanced operator patterns and error handling  
-• Scheduling strategies and debugging tools  
-• Putting it all together with real-world Spring WebFlux examples  
-
-Stay tuned for more detailed explorations of Project Reactor’s internals, best practices, and performance considerations.
