@@ -1,7 +1,6 @@
 # OUTLINE
 
 TODO : make outline consistent
-TODO : add Backpressure
 TODO : Explain simple overview of Project Reactor
 
 Introduction: The Concurrency Challenge
