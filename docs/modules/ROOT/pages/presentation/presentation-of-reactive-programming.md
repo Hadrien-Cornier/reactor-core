@@ -21,7 +21,7 @@ Event Loops
 4.1 The Rationale for Event Loops (fewer threads, better I/O concurrency)
 4.2 How an Event Loop Works (OS signals, callback registries, single/multi-threaded variants)
 4.3 Advantages & Drawbacks (single-threaded bottleneck, concurrency complexities, offloading CPU-intensive tasks)
-Spring’s Event-Loop Model
+Spring's Event-Loop Model
 5.1 Netty Under the Hood
 5.2 How Spring WebFlux Uses Event Loops for I/O
 5.3 Request Flow in a Reactive Spring Application (brief high-level walkthrough)
@@ -143,7 +143,7 @@ Spring WebFlux relies on Netty for its networking. Netty uses multiple event loo
 - Ensures [backpressure](#Backpressure) and async I/O across different libraries.
 
 Two popular Java libraries are:
-• **Project Reactor** (part of the Spring ecosystem)  
+• **[Project Reactor](https://projectreactor.io/docs/core/3.3.22.RELEASE/reference/index.html#about-doc)** (part of the Spring ecosystem)  
 • **RxJava** (inspired by Reactive Extensions from Microsoft)
 
 
@@ -235,8 +235,60 @@ suitable threads (e.g., boundedElastic), preventing the event loop from becoming
 
 ### Backpressure
 
-TODO ADD Backpressure
+Backpressure is the mechanism by which a Subscriber can signal to a Publisher that it can only handle
+a certain number of items at a time, preventing the Publisher from overwhelming the consumer with
+excess data. This concept comes from the [Reactive Streams specification](https://github.com/reactive-streams/reactive-streams-jvm/blob/v1.0.4/README.md#specification) and is central to ensuring
+that asynchronous, possibly unbounded data flows remain controllable and efficient.
 
+#### Motivation
+Often, the producer (Publisher) can generate data faster than the consumer (Subscriber) can process it.
+Without backpressure, the consumer might run out of memory or otherwise become unresponsive, because
+the producer keeps sending data it cannot handle in time. Backpressure lets the consumer dictate
+the pace, avoiding resource exhaustion.
+
+#### Reactive Streams Approach
+The Reactive Streams specification formalizes backpressure using a dedicated interface called
+Subscription. Once a Subscriber subscribes to a Publisher, it receives a Subscription, which it can
+use to request a certain number of items via the <code>request(long n)</code> method:
+
+1. **Publisher**: Responsible for producing items.  
+2. **Subscriber**: Consumes items. It can ask for more items incrementally to avoid being flooded.  
+3. **Subscription**: Maintains the relationship between publisher and subscriber; the subscriber
+   calls <code>request(n)</code> to demand that many more items, and the publisher calls
+   <code>onNext</code> up to <code>n</code> times (unless the sequence completes faster).
+
+#### How It Works in Project Reactor
+Project Reactor fully implements this backpressure model in the chain of operators that transform
+data between the original source Publisher and the final Subscriber. When you compose operators
+(e.g., <code>map</code>, <code>filter</code>, <code>flatMap</code>), each operator itself can act as both a Subscriber to
+the preceding stage and a Publisher for the next stage. Each operator:
+• Responds to <code>request(n)</code> calls from its downstream consumer.  
+• Propagates these requests upstream so that only <code>n</code> items are demanded at each step in the pipeline.  
+• Optionally implements strategies like buffering, dropping, or erroring out if data arrives
+  faster than it can handle.
+
+#### Example Chain of Calls
+1. The final Subscriber calls <code>request(n)</code> on its Subscription.  
+2. That Subscription belongs to an operator (e.g., <code>filter</code>), which forwards <code>request(n)</code> to
+   its upstream Subscription.  
+3. This propagates up the chain until it reaches the original Publisher.  
+4. The Publisher emits up to <code>n</code> items downstream.  
+5. Each operator processes these items, possibly buffering or transforming them, and passes them along
+   via <code>onNext</code> calls eventually reaching the final Subscriber.
+
+#### Backpressure Strategies
+When the consumer can't keep up, different operators or Publishers may adopt various behaviors:
+• **Buffer** extra data until the consumer calls <code>request</code> again.  
+• **Drop** new data (e.g., <code>onBackpressureDrop</code>) to avoid using too much memory.  
+• **Latest** keep only the most recent item and drop older items (e.g., <code>onBackpressureLatest</code>).  
+• **Error** fail the stream if it can't process items quickly enough.
+
+#### Why It Matters
+Backpressure ensures robust resource usage in asynchronous systems. In Project Reactor, this
+fine-grained flow control is automatic if you follow the Reactive Streams contract. By respecting
+the <code>request</code> mechanism, your application remains stable and predictable under varying
+load conditions. It aligns well with the "Responsive" and "Resilient" tenets of the Reactive
+Manifesto, ensuring that a slow or overloaded subscriber does not bring down the entire system.
 
 ### Schedulers For Shifting Execution to Another Thread
 
