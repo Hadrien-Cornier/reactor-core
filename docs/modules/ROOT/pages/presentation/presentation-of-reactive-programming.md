@@ -1,46 +1,44 @@
-# OUTLINE
+# Outline
 
-TODO : make outline consistent
-TODO : Explain simple overview of Project Reactor
+1. [Introduction: The Concurrency Challenge](#1-introduction-the-concurrency-challenge)
 
-Introduction: The Concurrency Challenge
-• State the high-level question: How do we handle many concurrent requests efficiently?
-Process-Per-Request Model
-2.1 What Is a Process?
-2.2 Past Approaches (e.g., CGI, Prefork in Apache)
-2.3 Where It Breaks Down (Resource overhead, slow context switching, limited scalability)
-Enter Threads
-3.1 What Is a Thread?
-3.2 Thread Resources (stack memory, CPU cycles)
-3.3 Thread Limits & Overheads
-3.4 Thread-Per-Request Model
-– Advantages vs. Past Approaches
-– Why It Still Fails Under Heavy Load (context switching, memory usage, thread starvation)
-Event Loops
-4.1 The Rationale for Event Loops (fewer threads, better I/O concurrency)
-4.2 How an Event Loop Works (OS signals, callback registries, single/multi-threaded variants)
-4.3 Advantages & Drawbacks (single-threaded bottleneck, concurrency complexities, offloading CPU-intensive tasks)
-Spring's Event-Loop Model
-5.1 Netty Under the Hood
-5.2 How Spring WebFlux Uses Event Loops for I/O
-5.3 Request Flow in a Reactive Spring Application (brief high-level walkthrough)
-Enter Reactive Programming
-6.1 The Reactive Manifesto & Its Principles
-– Responsive, Resilient, Elastic, Message-Driven
-6.2 Reactive Streams Specification (Publisher, Subscriber, Subscription, Processor)
-6.3 Project Reactor Overview
-– Key Operators (map, flatMap, filter)
-– Lazy evaluation (activation on subscribe)
-Advantages & Disadvantages of Project Reactor
-7.1 Benefits (optimal resource usage, concurrency, fewer idle threads)
-7.2 Trade-Offs (steep learning curve, debugging complexity, mindset shift)
-Example Code
-• Show a minimal Reactor flow (Flux / Mono usage)
-• Demonstrate lazy execution until subscribe()
-Summary & Next Steps
-• Summarize the evolution from processes to threads to event loops
-• Emphasize how Reactor builds on the event-loop model
-• Preview deeper dives: advanced operators, debugging, best practices
+2. [Process-Per-Request Model](#2-process-per-request-model)
+   - [2.1 What Is a Process?](#21-what-is-a-process)
+   - [2.2 Past Approaches: CGI & Prefork (Historical Context)](#22-past-approaches-cgi--prefork-historical-context)
+   - [2.3 Where It Breaks Down](#23-where-it-breaks-down)
+
+3. [Enter Threads](#3-enter-threads)
+   - [3.1 What Is a Thread?](#31-what-is-a-thread)
+   - [3.2 Thread Resources, Limits, & Overheads](#32-thread-resources-limits--overheads)
+   - [3.3 Thread-Per-Request Model](#33-thread-per-request-model)
+
+4. [Event Loops](#4-event-loops)
+   - [4.1 Rationale for Event Loops](#41-rationale-for-event-loops)
+   - [4.2 How an Event Loop Works](#42-how-an-event-loop-works)
+   - [4.3 Advantages & Drawbacks](#43-advantages--drawbacks)
+
+5. [Spring's Event-Loop Model](#5-springs-event-loop-model)
+   - [5.1 Netty Under the Hood](#51-netty-under-the-hood)
+   - [5.2 How Spring WebFlux Uses Event Loops](#52-how-spring-webflux-uses-event-loops)
+   - [5.3 Request Flow in a Reactive Spring Application](#53-request-flow-in-a-reactive-spring-application)
+
+6. [Enter Reactive Programming](#6-enter-reactive-programming)
+   - [6.1 The Reactive Manifesto & Its Principles](#61-the-reactive-manifesto--its-principles)
+   - [6.2 Reactive Streams Specification](#62-reactive-streams-specification)
+   - [6.3 Project Reactor Overview](#63-project-reactor-overview)
+
+7. [Advantages & Disadvantages of Project Reactor](#7-advantages--disadvantages-of-project-reactor)
+
+8. [Summary & Next Steps](#8-summary--next-steps)
+
+9. [Appendix](#appendix)
+   - [CGI](#cgi)
+   - [Prefork](#prefork)
+   - [Context Switching Overhead](#context-switching-overhead)
+   - [More About Event Loops](#more-about-event-loops)
+   - [Backpressure](#backpressure)
+   - [Schedulers For Shifting Execution to Another Thread](#schedulers-for-shifting-execution-to-another-thread)
+   - [Lazy Evaluation and Activation on Subscribe](#lazy-evaluation-and-activation-on-subscribe)
 
 # 1. Introduction: The Concurrency Challenge
 
