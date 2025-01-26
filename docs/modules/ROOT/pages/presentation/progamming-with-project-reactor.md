@@ -98,13 +98,13 @@ You can also create your own via `Schedulers.newBoundedElastic(...)` or `Schedul
 
 In Project Reactor, most operators are not inherently tied to their own concurrency or threading model. Rather, they compose (upstream) and transform (downstream) signals within the same thread context unless you introduce concurrency explicitly (for example, by using Schedulers or operators like flatMap that can merge asynchronous sources).
 
-Below is a conceptual overview of which operators tend to be “synchronous” (operate in the same thread context) vs. “asynchronous” (potentially operate in different thread contexts or spawn new work):
+Below is a conceptual overview of which operators tend to be "synchronous" (operate in the same thread context) vs. "asynchronous" (potentially operate in different thread contexts or spawn new work):
 
 ---
 
 ## 1. Synchronous Operators
 
-“Synchronous” in Project Reactor means that the operator processes data on the same thread on which it is invoked. It does not by itself introduce concurrency or switch threads.
+"Synchronous" in Project Reactor means that the operator processes data on the same thread on which it is invoked. It does not by itself introduce concurrency or switch threads.
 
 • map:  
   Transforms each source element (e.g., String → Integer) in a one-to-one manner.  
@@ -114,17 +114,17 @@ Below is a conceptual overview of which operators tend to be “synchronous” (
   – Any operator that simply processes items inline—without dispatching to another Scheduler—works synchronously by default.
 
 • publishOn or subscribeOn (unless they wrap an asynchronous source):  
-  – They schedule subsequent stages onto a different thread, but the actual scheduling call is synchronous with respect to the flow of signals—though once moved to another thread, downstream execution is asynchronous from the caller’s perspective.  
-  – These operators introduce concurrency only in that they “hop” to another thread. The operator itself is not merging multiple asynchronous Streams.
+  – They schedule subsequent stages onto a different thread, but the actual scheduling call is synchronous with respect to the flow of signals—though once moved to another thread, downstream execution is asynchronous from the caller's perspective.  
+  – These operators introduce concurrency only in that they "hop" to another thread. The operator itself is not merging multiple asynchronous Streams.
 
 ---
 
 ## 2. Asynchronous Operators
 
-Operators become “asynchronous” either when they themselves produce or merge asynchronous flows (e.g., multiple sources) or when they process data on another thread. Often, the prime example is flatMap.
+Operators become "asynchronous" either when they themselves produce or merge asynchronous flows (e.g., multiple sources) or when they process data on another thread. Often, the prime example is flatMap.
 
 • flatMap:  
-  – “Flattens” a one-to-many or one-to-zero/one Publisher returned by a function.  
+  – "Flattens" a one-to-many or one-to-zero/one Publisher returned by a function.  
   – This allows you to trigger asynchronous operations (e.g., an HTTP call returning a Mono/Flux), merging results back into one output sequence.  
   – Conceptually, each source item spawns an inner subscription, which may run on a completely new thread.
 
@@ -139,7 +139,7 @@ Operators become “asynchronous” either when they themselves produce or merge
 ## 3. Why Is map Synchronous While flatMap Can Be Asynchronous?
 
 • map:  
-  – Expects a “pure” function: (T → R).  
+  – Expects a "pure" function: (T → R).  
   – It never internally subscribes to a separate Publisher; it just transforms the object and passes it along.  
   – Execution continues on the same thread that emits the original item.
 
@@ -155,7 +155,7 @@ Operators become “asynchronous” either when they themselves produce or merge
 At a high level:
 
 1. **Reactive Streams**:  
-   – Reactor implements the Reactive Streams specification, where each Operator is a “Publisher” that emits signals (onNext, onError, onComplete) to its downstream “Subscriber.”  
+   – Reactor implements the Reactive Streams specification, where each Operator is a "Publisher" that emits signals (onNext, onError, onComplete) to its downstream "Subscriber."  
    – These signals flow synchronously by default, unless an operator specifically involves concurrency.
 
 2. **Schedulers**:  
@@ -172,7 +172,7 @@ At a high level:
 • **Synchronous operators** (like map) do all their work in the thread they are called on and never spawn concurrency themselves.  
 • **Asynchronous operators** (like flatMap) may merge multiple Publishers or schedule work on other threads, introducing concurrency or parallel processing in your stream.
 
-Project Reactor leaves you in charge of if and when concurrency happens. By default, signals flow synchronously in the caller’s thread. You add concurrency or scheduling explicitly with operators such as subscribeOn, publishOn, or via transforming with flatMap returning an async Publisher.
+Project Reactor leaves you in charge of if and when concurrency happens. By default, signals flow synchronously in the caller's thread. You add concurrency or scheduling explicitly with operators such as subscribeOn, publishOn, or via transforming with flatMap returning an async Publisher.
 
 ## Hot vs. Cold Publishers
 - A cold publisher (the default for most Flux and Mono) starts emitting items when subscribed to. Each new Subscriber sees the entire sequence from the beginning.
@@ -187,12 +187,350 @@ Error signals end the sequence (similar to throwing an exception), but Reactor o
 For advanced usage, combine `doOnError(...)` side effects with `onErrorMap(...)`, `onErrorContinue(...)`, etc.
 
 ## ConnectableFlux & ParallelFlux
+
+### ConnectableFlux
+A `ConnectableFlux` is a specialized form of `Flux` that allows you to control when the subscription to the source happens through the `connect()` method. This is particularly useful for:
+
+1. **Hot Publishers**: Making a cold publisher hot
+2. **Multicasting**: Sharing a single subscription among multiple subscribers
+3. **Late Subscribers**: Managing late subscribers in a controlled way
+
+Here's an example of ConnectableFlux usage:
+
+```java
+// Create a ConnectableFlux that emits every second
+ConnectableFlux<Long> connectableFlux = Flux.interval(Duration.ofSeconds(1))
+    .publish();
+
+// First subscriber
+connectableFlux.subscribe(i -> System.out.println("Subscriber 1: " + i));
+
+// Second subscriber
+connectableFlux.subscribe(i -> System.out.println("Subscriber 2: " + i));
+
+// Nothing happens until we connect
+connectableFlux.connect();
+```
+
+Common ConnectableFlux patterns:
+
+```java
+// Auto-connect when 2 subscribers are ready
+Flux<Integer> flux = Flux.range(1, 3)
+    .publish()
+    .autoConnect(2);
+
+// Ref-count: automatically connect when first subscriber arrives
+// and cancel when last subscriber leaves
+Flux<Integer> refCounted = Flux.range(1, 3)
+    .publish()
+    .refCount(1);
+
+// Ref-count with grace period
+Flux<Integer> refCountedGrace = Flux.range(1, 3)
+    .publish()
+    .refCount(1, Duration.ofSeconds(1));
+```
+
+### ParallelFlux vs flatMap with parallel()
+
+While both `ParallelFlux` and `flatMap` with `parallel()` scheduler can achieve parallelization, they serve different purposes and have different characteristics:
+
+#### ParallelFlux
+```java
+// Using ParallelFlux
+ParallelFlux<Integer> parallelFlux = Flux.range(1, 10)
+    .parallel(4)  // Split into 4 rails
+    .runOn(Schedulers.parallel())
+    .map(i -> performComputation(i));
+```
+
+#### FlatMap with parallel()
+```java
+// Using flatMap with parallel scheduler
+Flux<Integer> flatMapParallel = Flux.range(1, 10)
+    .flatMap(i -> Mono.just(i)
+        .map(this::performComputation)
+        .subscribeOn(Schedulers.parallel()),
+        4  // concurrency hint
+    );
+```
+
+Key Differences:
+
+1. **Work Distribution**:
+   - `ParallelFlux`: Evenly distributes work across a fixed number of rails (round-robin)
+   - `flatMap`: Dynamically schedules work as it comes, which can lead to uneven distribution
+
+2. **Ordering**:
+   - `ParallelFlux`: No guaranteed ordering by default
+   - `flatMap`: Can preserve ordering using `flatMapSequential` or `concatMap`
+
+3. **Backpressure Handling**:
+   - `ParallelFlux`: Maintains backpressure per rail
+   - `flatMap`: Handles backpressure across all concurrent operations
+
+4. **Use Cases**:
+   - `ParallelFlux`: Better for CPU-bound tasks with predictable workloads
+   - `flatMap`: Better for I/O-bound tasks or varying workloads
+
+Example showing the differences:
+
+```java
+public class ParallelizationExample {
+    
+    public static void main(String[] args) {
+        // ParallelFlux example
+        Flux.range(1, 10)
+            .parallel(2)
+            .runOn(Schedulers.parallel())
+            .map(i -> {
+                System.out.println("ParallelFlux processing " + i + 
+                    " on thread " + Thread.currentThread().getName());
+                return i * 2;
+            })
+            .sequential() // merge back to regular Flux
+            .subscribe();
+
+        // flatMap with parallel example
+        Flux.range(1, 10)
+            .flatMap(i -> Mono.just(i)
+                .map(val -> {
+                    System.out.println("flatMap processing " + val + 
+                        " on thread " + Thread.currentThread().getName());
+                    return val * 2;
+                })
+                .subscribeOn(Schedulers.parallel()),
+                2 // concurrency hint
+            )
+            .subscribe();
+    }
+
+    // Example showing ordering differences
+    public static void demonstrateOrdering() {
+        // ParallelFlux - order not guaranteed
+        Flux.range(1, 5)
+            .parallel()
+            .runOn(Schedulers.parallel())
+            .map(i -> i * 2)
+            .sequential()
+            .subscribe(i -> System.out.println("ParallelFlux: " + i));
+
+        // flatMap with ordered variants
+        Flux.range(1, 5)
+            .flatMapSequential(i -> Mono.just(i)
+                .map(val -> val * 2)
+                .subscribeOn(Schedulers.parallel())
+            )
+            .subscribe(i -> System.out.println("Ordered flatMap: " + i));
+    }
+
+    // Example showing backpressure handling
+    public static void demonstrateBackpressure() {
+        // ParallelFlux with backpressure
+        Flux.range(1, 100)
+            .parallel(4)
+            .runOn(Schedulers.parallel())
+            .map(i -> heavyComputation(i))
+            .sequential()
+            .limitRate(10) // backpressure per rail
+            .subscribe();
+
+        // flatMap with backpressure
+        Flux.range(1, 100)
+            .flatMap(i -> Mono.just(i)
+                .map(ParallelizationExample::heavyComputation)
+                .subscribeOn(Schedulers.parallel()),
+                10 // concurrency limit acts as backpressure
+            )
+            .subscribe();
+    }
+
+    private static int heavyComputation(int i) {
+        // Simulate heavy computation
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return i * 2;
+    }
+}
+```
+
+### When to Use Which
+
+1. Use `ParallelFlux` when:
+   - You have CPU-intensive tasks
+   - Work items take similar time to process
+   - You want explicit control over the number of parallel rails
+   - You need efficient backpressure handling per rail
+
+2. Use `flatMap` with parallel scheduler when:
+   - You have I/O-bound tasks
+   - Work items have varying processing times
+   - You need more flexibility in concurrency
+   - Order preservation is important
+   - You need dynamic concurrency adjustment
+
+Both approaches can be combined with other reactive operators, but `ParallelFlux` has a more limited set of operators available while in parallel mode (before calling `sequential()`).
+
+## Context Propagation in Project Reactor
+
+### What is Context Propagation?
+
+Context propagation is a mechanism that allows passing contextual information (like correlation IDs, security credentials, or transaction metadata) along the reactive pipeline without explicitly including it in the data flow. It's similar to ThreadLocal but works across asynchronous boundaries and different threads.
+
+### When is it Useful?
+
+Context propagation is particularly valuable in:
+
+1. Distributed tracing
+2. Security context propagation
+3. Transaction management
+4. MDC logging
+5. Request scoping in web applications
+
+### How it Works
+
+Context in Project Reactor:
+- Is immutable
+- Flows from downstream to upstream (opposite to data flow)
+- Is subscription-scoped
+- Can be read using `deferContextual()` or `transformDeferredContextual()`
+- Can be written using `contextWrite()`
+
+### Code Examples
+
+Here's a practical example demonstrating context propagation:
+
+```java
+public class ContextPropagationExample {
+    private static final String CORRELATION_ID = "correlationId";
+    private static final String USER_ID = "userId";
+
+    public static void main(String[] args) {
+        // Simulating a service call with context
+        processRequest("GET /api/data", "user123")
+            .contextWrite(Context.of(CORRELATION_ID, "req-123"))
+            .subscribe(
+                response -> System.out.println("Response: " + response),
+                error -> System.err.println("Error: " + error)
+            );
+    }
+
+    public static Mono<String> processRequest(String request, String userId) {
+        return Mono.deferContextual(ctx -> {
+            // Read from context
+            String correlationId = ctx.getOrDefault(CORRELATION_ID, "unknown");
+            
+            return executeRequest(request)
+                .transformDeferredContextual((mono, innerCtx) -> {
+                    // Log with context information
+                    System.out.println(String.format(
+                        "Processing request [correlationId=%s, userId=%s]: %s",
+                        correlationId,
+                        innerCtx.getOrDefault(USER_ID, "anonymous"),
+                        request
+                    ));
+                    return mono;
+                })
+                // Add more context information
+                .contextWrite(Context.of(USER_ID, userId));
+        });
+    }
+
+    private static Mono<String> executeRequest(String request) {
+        return Mono.deferContextual(ctx -> {
+            // Access context in business logic
+            String correlationId = ctx.get(CORRELATION_ID);
+            String userId = ctx.get(USER_ID);
+            
+            // Simulate API call
+            return Mono.just(String.format(
+                "Processed request for user %s with correlationId %s",
+                userId,
+                correlationId
+            ));
+        });
+    }
+}
+```
+
+### Advanced Context Usage with Hooks
+
+Project Reactor 3.5.0 introduced enhanced context propagation support through hooks:
+
+```java
+public class ContextPropagationWithHooks {
+    public static void main(String[] args) {
+        // Enable automatic context propagation
+        Hooks.enableAutomaticContextPropagation();
+
+        // Create a ThreadLocal for demonstration
+        ThreadLocal<String> threadLocal = new ThreadLocal<>();
+        threadLocal.set("original-thread-value");
+
+        Mono.defer(() -> {
+            String value = threadLocal.get();
+            return Mono.just("Processing with " + value);
+        })
+        .publishOn(Schedulers.boundedElastic())
+        .doOnNext(result -> {
+            // ThreadLocal value is preserved across thread boundaries
+            System.out.println(result + " (ThreadLocal: " + threadLocal.get() + ")");
+        })
+        .subscribe();
+    }
+}
+```
+
+### Best Practices
+
+1. **Immutability**: Treat context as immutable and use `contextWrite()` to create new contexts with additional values.
+
+```java
+// Good
+mono.contextWrite(ctx -> ctx.put("key", "value"))
+
+// Avoid modifying context directly
+mono.contextWrite(ctx -> {
+    ((Context) ctx).put("key", "value"); // Wrong!
+    return ctx;
+})
+```
+
+2. **Context Access**: Use `deferContextual()` for context-dependent operations.
+
+```java
+// Good
+Mono.deferContextual(ctx -> 
+    Mono.just("Value for " + ctx.get("key"))
+)
+
+// Avoid storing context in variables
+Context globalCtx; // Wrong!
+```
+
+3. **Error Handling**: Always provide default values when reading from context.
+
+```java
+// Good
+ctx.getOrDefault("key", "defaultValue")
+
+// Instead of
+try {
+    ctx.get("key")
+} catch (Exception e) {
+    // Handle missing key
+}
+```
+
+Context propagation is particularly useful in microservices architectures where you need to maintain contextual information across service boundaries and asynchronous operations. It provides a clean way to pass metadata without polluting your business logic or method signatures.
+
+## ConnectableFlux & ParallelFlux
 - `ConnectableFlux` allows multiple subscribers to observe the same data source together, but the source only starts producing once "connected."
 - `ParallelFlux` splits a Flux across multiple "rails" (threads) for parallel processing. You typically merge or reduce these rails back into one Flux when you are finished parallelizing.
-
-## Context Propagation
-Reactor includes support for a lightweight contextual data store known as Context.
-Operators like `contextWrite(...)` and `deferContextual(...)` let you attach and retrieve values, useful for carrying around data such as correlation IDs or user info without resorting to ThreadLocal (especially crucial in highly concurrent or reactive environments).
 
 These core objects and features form the backbone of Reactor. By chaining operators on Flux or Mono, controlling concurrency with Schedulers, handling errors proactively, and optionally sharing or splitting data streams with specialized types, you can build expressive, reactive applications that handle data in a non-blocking, event-driven manner.
 
