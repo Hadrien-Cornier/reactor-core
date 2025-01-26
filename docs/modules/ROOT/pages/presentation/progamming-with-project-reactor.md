@@ -546,3 +546,204 @@ In many Java applications, you may observe additional threads running even befor
 • SignalDispatcher – A low-level JVM thread that processes operating system signals (e.g., signals for handling Ctrl+C interrupts on some systems).  
 
 These threads are part of the basic Java Virtual Machine mechanism and are not introduced by Reactor or any other concurrency library. They are generally used for internal bookkeeping, garbage collection, and system-level signal handling. Consequently, even if your code is configured to run on a single thread from a Reactor perspective, the JVM itself can still have multiple system threads active alongside your application logic.
+
+## Understanding Schedulers in Project Reactor
+
+Schedulers are Project Reactor's mechanism for controlling execution contexts. Each scheduler type is optimized for different use cases.
+
+### Types of Schedulers
+
+1. **Schedulers.boundedElastic()**
+```java
+// Best for I/O operations
+Flux.fromIterable(files)
+    .flatMap(file -> Mono.fromCallable(() -> readFile(file))
+        .subscribeOn(Schedulers.boundedElastic()))
+```
+- Characteristics:
+  - Creates new worker pools as needed
+  - Caps number of maximum backing threads (default: CPU cores × 10)
+  - Queues tasks when all threads are busy
+  - Releases idle threads after 60s
+  - Best for: I/O operations, blocking calls, JDBC operations
+
+2. **Schedulers.parallel()**
+```java
+// Best for CPU-intensive tasks
+Flux.range(1, 100)
+    .parallel()
+    .runOn(Schedulers.parallel())
+    .map(this::computeIntensive)
+    .sequential()
+```
+- Characteristics:
+  - Fixed thread pool
+  - Number of threads = CPU cores
+  - Never releases threads
+  - Best for: CPU-intensive computations, mathematical calculations
+
+3. **Schedulers.single()**
+```java
+// Best for sequential operations
+Flux.range(1, 100)
+    .publishOn(Schedulers.single())
+    .map(i -> performSequentialOperation(i))
+```
+- Characteristics:
+  - Single worker thread
+  - Reused across calls
+  - Best for: Sequential operations, maintaining order
+
+4. **Schedulers.immediate()**
+```java
+// Executes in the current thread
+Flux.range(1, 100)
+    .publishOn(Schedulers.immediate())
+    .map(i -> i * 2)
+```
+- Characteristics:
+  - Executes in calling thread
+  - No threading overhead
+  - Best for: Testing, debugging
+
+### Practical Examples
+
+1. **Mixed Workload Handling**
+```java
+public class SchedulerExample {
+    public Flux<ProcessedData> processData(List<RawData> data) {
+        return Flux.fromIterable(data)
+            // CPU-intensive preprocessing
+            .parallel()
+            .runOn(Schedulers.parallel())
+            .map(this::preprocess)
+            .sequential()
+            // I/O operations
+            .flatMap(preprocessed -> 
+                Mono.fromCallable(() -> saveToDatabase(preprocessed))
+                    .subscribeOn(Schedulers.boundedElastic())
+            );
+    }
+
+    private ProcessedData preprocess(RawData data) {
+        // CPU-intensive operation
+        return /* computation */;
+    }
+
+    private SavedData saveToDatabase(ProcessedData data) {
+        // Blocking I/O operation
+        return /* database call */;
+    }
+}
+```
+
+2. **HTTP Client with Timeouts**
+```java
+public class ReactiveHttpClient {
+    public Mono<Response> fetchWithTimeout(String url, Duration timeout) {
+        return Mono.fromCallable(() -> blockingHttpCall(url))
+            .subscribeOn(Schedulers.boundedElastic())
+            .timeout(timeout)
+            .publishOn(Schedulers.parallel()) // Process response
+            .map(this::processResponse);
+    }
+}
+```
+
+3. **Resource Management**
+```java
+public class ResourceManager {
+    private final Scheduler dedicatedScheduler = 
+        Schedulers.newBoundedElastic(
+            10, // max threads
+            100, // queue size
+            "db-ops"
+        );
+
+    public Mono<Data> performDatabaseOperation() {
+        return Mono.fromCallable(this::dbCall)
+            .subscribeOn(dedicatedScheduler)
+            .doFinally(signal -> {
+                if (isShuttingDown) {
+                    dedicatedScheduler.dispose();
+                }
+            });
+    }
+}
+```
+
+### Best Practices
+
+1. **Choosing the Right Scheduler**
+```java
+// GOOD: I/O operations on boundedElastic
+Mono.fromCallable(() -> fileSystem.read())
+    .subscribeOn(Schedulers.boundedElastic())
+
+// GOOD: CPU-intensive on parallel
+Flux.range(1, 1000)
+    .parallel()
+    .runOn(Schedulers.parallel())
+    .map(this::heavyComputation)
+
+// BAD: Blocking I/O on parallel
+Flux.range(1, 1000)
+    .parallel()
+    .runOn(Schedulers.parallel())
+    .map(i -> blockingDatabaseCall()) // Don't do this!
+```
+
+2. **Thread Pool Sizing**
+```java
+// Custom bounded elastic pool for specific workload
+Scheduler customScheduler = Schedulers.newBoundedElastic(
+    Runtime.getRuntime().availableProcessors() * 2, // threads
+    1000, // queueSize
+    "custom-pool"
+);
+
+// Use for specific operations
+Mono.fromCallable(() -> operation())
+    .subscribeOn(customScheduler)
+```
+
+3. **Monitoring and Metrics**
+```java
+public class SchedulerMetrics {
+    private final MeterRegistry registry;
+
+    public Mono<Data> instrumentedOperation() {
+        return Mono.fromCallable(() -> operation())
+            .subscribeOn(Schedulers.boundedElastic())
+            .name("my-operation")
+            .tag("scheduler", "boundedElastic")
+            .metrics();
+    }
+}
+```
+
+### Performance Considerations
+
+1. **Thread Switching Overhead**
+- Minimize unnecessary thread switches
+- Use `publishOn` only when needed
+- Consider using `immediate()` for testing
+
+2. **Resource Management**
+- Dispose custom schedulers when no longer needed
+- Monitor thread pool utilization
+- Set appropriate queue sizes for bounded schedulers
+
+3. **Backpressure Awareness**
+- BoundedElastic queues tasks when overloaded
+- Parallel scheduler can lead to overflow if not properly backpressured
+- Use `onBackpressureBuffer` or similar operators when needed
+
+This understanding of Schedulers helps in:
+- Optimizing application performance
+- Preventing resource exhaustion
+- Proper handling of blocking operations
+- Efficient CPU utilization
+- Better resource management
+
+Remember: The choice of Scheduler significantly impacts your application's behavior and performance. Always profile and test with realistic workloads to ensure optimal configuration.
