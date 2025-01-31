@@ -1,78 +1,427 @@
-# Deep Dive Outline: Project Reactor Programming Concepts
+# Project Reactor Programming Guide
 
-1. Introduction to Reactive Programming  
-   1.1 What is Reactive?  
-   1.2 Reactive Streams Specification  
-   1.3 Key Benefits of Non-blocking I/O  
+## Core Concepts
 
-2. Core Reactor Types  
-   2.1 Flux (0...N Items)  
-   2.2 Mono (0...1 Item)  
+### Operation Flow
+1. Publisher.subscribe(Subscriber) → creates Subscription
+2. Subscriber.request(n) → signals demand (backpressure)
+3. Publisher.onNext()/onComplete()/onError() → emits data
 
-3. Operators and Functional Style  
-   3.1 Mapping, Filtering, Reducing  
-   3.2 FlatMap and Asynchronous Composition  
-   3.3 Error Handling (onErrorReturn, onErrorResume, retry)  
+### Backpressure
+- Subscriber controls emission rate
+- Handled via `limitRate`, `onBackpressureDrop`
+- Each operator acts as Processor: upstream → transform → downstream
+- Request flow: downstream → upstream
 
-4. Concurrency Control  
-   4.1 Schedulers and Threading  
-   4.2 publishOn vs. subscribeOn  
-   4.3 BoundedElastic, Parallel, Single  
+### Publishers
+```java
+// Mono: 0-1 items
+Mono<T>   // async, lazy, single-value
 
-5. Advanced Topics  
-   5.1 Hot vs. Cold Publishers  
-   5.2 Context Propagation  
-   5.3 ConnectableFlux and Broadcasting  
-   5.4 Testing with reactor-test  
+// Flux: 0-N items
+Flux<T>   // async, lazy, stream
+```
 
-# Core Concepts of Project Reactor
+### Threading
+```java
+// Default: subscriber's thread
+flux.subscribe()
 
-## Reactive Streams Specification
+// Change thread context
+flux.publishOn(scheduler)    // affects downstream
+flux.subscribeOn(scheduler)  // affects whole chain
+
+// Built-in schedulers
+boundedElastic() // I/O operations (default: cpu*10 threads)
+parallel()       // CPU-intensive (default: cpu threads)
+single()         // Sequential operations
+immediate()      // Current thread
+fromExecutorService(executor) // Custom thread pool
+```
+
+### Reactive Streams
+```java
+Publisher<T>     -> emit data
+Subscriber<T>    -> consume data
+Subscription     -> control demand (backpressure)
+Processor<T,R>   -> transform data
+```
+
+Key Point: Subscribers control demand via `request(n)` calls, enabling backpressure.
+
+### Mono & Flux
+```java
+// Common Creation Methods
+Mono.just(value)
+Mono.fromCallable(() -> blockingCall())
+Mono.defer(() -> dynamicMono())
+Mono.empty()
+Mono.error(ex)
+
+Flux.just(1,2,3)
+Flux.fromIterable(list)
+Flux.range(1,10)
+Flux.interval(Duration.ofSeconds(1))
+```
+
+### Detailed Scheduler Types
 
 ```java
-// @pages If you're unfamiliar with the specification, know that it enforces a
-// well-defined sequence of method calls and a backpressure strategy ensuring
-// that Subscribers can request a manageable amount of data from Publishers.
-// Pseudo-code for a Publisher
-interface Publisher<T> {
-void subscribe(Subscriber<? super T> subscriber);
+// 1. boundedElastic() - Best for I/O
+// Characteristics:
+// - Creates worker pools as needed
+// - Caps threads (CPU cores × 10)
+// - Queues excess tasks
+// - 60s idle timeout
+// - Use for: I/O, blocking, JDBC
+Flux.fromIterable(files)
+    .flatMap(file -> Mono.fromCallable(() -> readFile(file))
+        .subscribeOn(Schedulers.boundedElastic()))
+
+// 2. parallel() - Best for CPU work
+// Characteristics:
+// - Fixed pool (CPU cores)
+// - Never releases threads
+// - Use for: computation, math
+Flux.range(1, 100)
+    .parallel()
+    .runOn(Schedulers.parallel())
+    .map(this::computeIntensive)
+    .sequential()
+
+// 3. single() - Best for ordering
+// Characteristics:
+// - Single worker thread
+// - Reused across calls
+// - Use for: sequential ops
+Flux.range(1, 100)
+    .publishOn(Schedulers.single())
+    .map(i -> performSequentialOperation(i))
+
+// 4. immediate() - No threading
+// Characteristics:
+// - Uses caller's thread
+// - No thread overhead
+// - Use for: testing, debug
+Flux.range(1, 100)
+    .publishOn(Schedulers.immediate())
+    .map(i -> i * 2)
+```
+
+### Async Operations (flatMap)
+```java
+// Simple async example
+userIds.flatMap(id -> 
+    // Async HTTP call returning Mono<User>
+    webClient.get()
+             .uri("/users/{id}", id)
+             .retrieve()
+             .bodyToMono(User.class)
+).subscribe()
+```
+
+### Hot vs Cold Publishers
+```java
+// Cold (default) - per-subscriber sequence
+Flux<Integer> cold = Flux.range(1,3);
+
+// Hot - shared sequence
+DirectProcessor<Integer> hot = DirectProcessor.create();
+hot.onNext(1); // Emitted regardless of subscribers
+
+// Convert cold to hot
+Flux<Integer> shared = cold.share(); // Uses multicast
+```
+
+### Error Handling
+```java
+flux.onErrorReturn(fallback)      // Return value
+    .onErrorResume(ex -> backup)  // Switch publisher
+    .onErrorContinue((ex,obj) -> 
+         log.error("Skipping: {}", obj)) // Continue after error
+    .retry(3)                     // Retry n times
+```
+
+### Context Propagation (Downstream -> Upstream)
+```java
+// Context flows opposite to data
+Mono.deferContextual(ctx -> 
+    Mono.just("User:" + ctx.get("user"))
+)
+.contextWrite(Context.of("user", "john"))
+.subscribe(System.out::println); // "User:john"
+```
+
+## 2. Design Patterns & Best Practices
+
+### Common Reactive Patterns
+
+```java
+// Circuit Breaker Pattern
+Mono<Response> withCircuitBreaker(Request req) {
+    return Mono.just(req)
+        .transform(CircuitBreaker.of("service")
+            .run())
+        .timeout(Duration.ofSeconds(1))
+        .retryWhen(Retry.backoff(3, Duration.ofMillis(100)));
 }
-// Pseudo-code for a Subscriber
-interface Subscriber<T> {
-void onSubscribe(Subscription s);
-void onNext(T t);
-void onError(Throwable t);
-void onComplete();
+
+// Bulkhead Pattern (Resource Isolation)
+class BulkheadExample {
+    private final Scheduler dedicated = 
+        Schedulers.newBoundedElastic(10, 100, "service-a");
+    
+    Mono<Response> execute(Request req) {
+        return Mono.just(req)
+            .subscribeOn(dedicated)
+            .map(this::process);
+    }
 }
-// Pseudo-code for a Subscription
-interface Subscription {
-// Request n items from the Publisher
-void request(long n);
-// Cancel the subscription (stop receiving items)
-void cancel();
+
+// Cache Pattern
+class CacheExample {
+    private final LoadingCache<String, Mono<Data>> cache = 
+        Caffeine.newBuilder()
+            .buildAsync(key -> fetchData(key).cache());
+    
+    Mono<Data> getData(String key) {
+        return Mono.fromFuture(cache.get(key));
+    }
 }
-// Pseudo-code for a Processor
-interface Processor<T, R> extends Subscriber<T>, Publisher<R> {
-// No additional methods, simply inherits both Subscriber and Publisher
+
+// Saga Pattern (Distributed Transactions)
+Mono<OrderResult> orderSaga(Order order) {
+    return validateOrder(order)
+        .flatMap(this::reserveInventory)
+        .flatMap(this::processPayment)
+        .flatMap(this::shipOrder)
+        .doOnError(this::compensate);
 }
 ```
 
-### Basic Operation Flow
+### Performance Optimization
 
-1. A <strong>Publisher</strong> has a "subscribe" method. When you call subscribe with a <strong>Subscriber</strong>, the Publisher creates or manages a <strong>Subscription</strong>, passing it to the <strong>Subscriber</strong>'s `onSubscribe(...)`.  
-2. The <strong>Subscriber</strong> uses this Subscription to call `request(long n)`, signifying how many items it is ready to receive (backpressure).  
-3. The <strong>Publisher</strong> starts pushing items via `onNext(T)`. Once all requested items are produced or an error/completion occurs, it signals `onComplete()` or `onError(Throwable)`.  
+```java
+// Batching & Buffering
+Flux<List<Event>> batchEvents(Flux<Event> source) {
+    return source
+        .bufferTimeout(100, Duration.ofMillis(50))  // Size or time
+        .onBackpressureBuffer(10_000, BufferOverflowStrategy.DROP_OLDEST);
+}
 
-### Backpressure and the Order of Operator Calls
+// Prefetch Tuning
+Flux<Data> optimizedPrefetch(Flux<Request> reqs) {
+    return reqs.flatMap(
+        r -> process(r),
+        maxConcurrent = 8,    // Parallel processes
+        prefetch = 32         // Items pre-fetched
+    );
+}
 
-• <strong>Backpressure</strong> means aSubscriber controls how quickly data is emitted. Reactor aligns with the specification, providing operators like <code>limitRate</code> or <code>onBackpressureDrop</code> to handle overflows.  
-• In a reactive chain, each operator is effectively a tiny <strong>Processor</strong>. For instance, <code>Flux.map</code> or <code>Flux.filter</code> subscribe to their upstream, apply transformation or filtering, and then publish to downstream.  
-• When you chain operators, the flow typically proceeds from upstream to downstream. The act of requesting items starts from the final Subscriber, travels upstream, and triggers data production.  
+// Memory Management
+class ResourceManagement {
+    Flux<Data> withCleanup(Resource resource) {
+        return Flux.using(
+            () -> resource,           // Acquire
+            r -> process(r),          // Use
+            Resource::close,          // Cleanup
+            true                      // Eager cleanup
+        );
+    }
+}
+```
+
+### Testing Strategies
+
+```java
+// Unit Testing with StepVerifier
+@Test
+void testReactiveFlow() {
+    Flux<String> source = service.getData();
+    
+    StepVerifier.create(source)
+        .expectNext("a", "b")
+        .expectComplete()
+        .verify(Duration.ofSeconds(5));
+}
+
+// Virtual Time Testing
+@Test
+void testTimeBasedOps() {
+    StepVerifier.withVirtualTime(() -> 
+        Flux.interval(Duration.ofHours(1)).take(2)
+    )
+    .expectSubscription()
+    .expectNoEvent(Duration.ofHours(1))
+    .expectNext(0L)
+    .thenAwait(Duration.ofHours(1))
+    .expectNext(1L)
+    .verifyComplete();
+}
+
+// Test Publishers
+@Test
+void testWithTestPublisher() {
+    TestPublisher<String> publisher = TestPublisher.create();
+    Flux<String> flux = publisher.flux().map(String::toUpperCase);
+    
+    StepVerifier.create(flux)
+        .then(() -> publisher.emit("a", "b"))
+        .expectNext("A", "B")
+        .verifyComplete();
+}
+```
+
+### Common Anti-patterns & Pitfalls
+
+```java
+// DON'T: Block in reactive chain
+Flux.just(1,2,3)
+    .map(i -> {
+        Thread.sleep(100);    // WRONG!
+        return process(i);
+    })
+
+// DO: Use proper async wrapper
+Flux.just(1,2,3)
+    .flatMap(i -> Mono
+        .fromCallable(() -> {
+            Thread.sleep(100);
+            return process(i);
+        })
+        .subscribeOn(Schedulers.boundedElastic())
+    )
+
+// DON'T: Unbounded concurrency
+source.flatMap(item -> 
+    service.process(item), 
+    Integer.MAX_VALUE        // WRONG!
+)
+
+// DO: Limit concurrency
+source.flatMap(item ->
+    service.process(item),
+    maxConcurrent = 10      // RIGHT!
+)
+
+// DON'T: Ignore errors
+flux.subscribe(
+    data -> process(data)   // WRONG: No error handler
+)
+
+// DO: Handle errors
+flux.subscribe(
+    data -> process(data),
+    error -> handleError(error)
+)
+```
+
+### Best Practices
+
+```java
+// 1. Scheduler Selection
+class SchedulerUsage {
+    // GOOD: I/O operations
+    Mono<Data> ioOperation() {
+        return Mono.fromCallable(() -> readFile())
+            .subscribeOn(Schedulers.boundedElastic());
+    }
+    
+    // GOOD: CPU-intensive tasks
+    Flux<Data> computeIntensive() {
+        return Flux.range(1, 1000)
+            .parallel()
+            .runOn(Schedulers.parallel())
+            .map(this::heavyComputation)
+            .sequential();
+    }
+}
+
+// 2. Custom Thread Pools
+class CustomThreadPools {
+    private final Scheduler customPool = Schedulers.newBoundedElastic(
+        Runtime.getRuntime().availableProcessors() * 2,  // threads
+        1000,                                           // queue size
+        "api-pool"
+    );
+    
+    Mono<Response> apiCall() {
+        return Mono.fromCallable(() -> externalCall())
+            .subscribeOn(customPool)
+            .doFinally(signal -> {
+                if (isShuttingDown) customPool.dispose();
+            });
+    }
+}
+
+// 3. Metrics & Monitoring
+class MetricsExample {
+    Mono<Data> trackedOperation(String opName) {
+        return Mono.fromCallable(() -> operation())
+            .name(opName)
+            .tag("type", "business")
+            .metrics()
+            .transformDeferred(mono -> 
+                mono.doOnSubscribe(s -> recordStart(opName))
+                   .doFinally(s -> recordEnd(opName))
+            );
+    }
+}
+```
+
+## Sync vs Async Operators
+
+### Synchronous Operators
+- Execute in same thread
+- No concurrency introduced
+```java
+// map: pure transform (T → R)
+flux.map(i -> i * 2)
+    .filter(i -> i > 5)
+    .reduce(0, Integer::sum)
+```
+
+Common sync operators:
+- `map`: one-to-one transform
+- `filter`, `take`, `reduce`: inline processing
+- `publishOn`/`subscribeOn`: scheduling call only
+
+### Asynchronous Operators
+- May execute across threads
+- Introduce concurrency
+```java
+// flatMap: async operations
+flux.flatMap(i -> webClient.get()
+        .uri("/api/{i}", i)
+        .retrieve()
+        .bodyToMono(Response.class))
+    .mergeWith(otherFlux)
+    .delayElements(Duration.ofMillis(100))
+```
+
+Common async operators:
+- `flatMap`: async transformations
+- `merge`/`zip`: combine streams
+- `delay`/`interval`: timer operations
+
+### Key Differences
+1. **map vs flatMap**:
+   - `map`: (T → R) pure transform
+   - `flatMap`: (T → Publisher<R>) with subscriptions
+
+2. **Threading Model**:
+   - Default: synchronous in caller's thread
+   - Async: explicit via Schedulers or async operators
+
+## Next Steps
+1. Practice with [Project Reactor Test](https://github.com/reactor/reactor-core/tree/main/reactor-test)
+2. Explore [Reactor Debugging Guide](https://projectreactor.io/docs/core/release/reference/#debugging)
+3. Join [Reactor Gitter](https://gitter.im/reactor/reactor)
 
 
----
+## APPENDIX
 
-These interfaces and their related specifications form the foundation of Project Reactor. Understanding the order of calls helps clarify why certain operators must be placed before or after others in a chain, how error-handling behaves, and where concurrency boundaries (`publishOn`, `subscribeOn`) are effectively inserted.
+# Core Concepts of Project Reactor
 
 ## Mono and Flux Publishers
 - `Mono<T>` represents a lazy, potentially asynchronous computation that can emit at most one item (0 or 1) and then complete (or error).
@@ -92,88 +441,6 @@ Built-in schedulers include:
 You can also create your own via `Schedulers.newBoundedElastic(...)` or `Schedulers.fromExecutor(...)`.
 
 
-## Sync versus Async Publishers 
-
-# Understanding Synchronous vs. Asynchronous Operators in Project Reactor
-
-In Project Reactor, most operators are not inherently tied to their own concurrency or threading model. Rather, they compose (upstream) and transform (downstream) signals within the same thread context unless you introduce concurrency explicitly (for example, by using Schedulers or operators like flatMap that can merge asynchronous sources).
-
-Below is a conceptual overview of which operators tend to be "synchronous" (operate in the same thread context) vs. "asynchronous" (potentially operate in different thread contexts or spawn new work):
-
----
-
-## 1. Synchronous Operators
-
-"Synchronous" in Project Reactor means that the operator processes data on the same thread on which it is invoked. It does not by itself introduce concurrency or switch threads.
-
-• map:  
-  Transforms each source element (e.g., String → Integer) in a one-to-one manner.  
-  – It behaves synchronously: all transformations happen on the same thread that emits the original data.
-
-• filter, take, reduce, etc.:  
-  – Any operator that simply processes items inline—without dispatching to another Scheduler—works synchronously by default.
-
-• publishOn or subscribeOn (unless they wrap an asynchronous source):  
-  – They schedule subsequent stages onto a different thread, but the actual scheduling call is synchronous with respect to the flow of signals—though once moved to another thread, downstream execution is asynchronous from the caller's perspective.  
-  – These operators introduce concurrency only in that they "hop" to another thread. The operator itself is not merging multiple asynchronous Streams.
-
----
-
-## 2. Asynchronous Operators
-
-Operators become "asynchronous" either when they themselves produce or merge asynchronous flows (e.g., multiple sources) or when they process data on another thread. Often, the prime example is flatMap.
-
-• flatMap:  
-  – "Flattens" a one-to-many or one-to-zero/one Publisher returned by a function.  
-  – This allows you to trigger asynchronous operations (e.g., an HTTP call returning a Mono/Flux), merging results back into one output sequence.  
-  – Conceptually, each source item spawns an inner subscription, which may run on a completely new thread.
-
-• merge, zip, combineLatest, firstWithSignal, etc.:  
-  – These can combine data from multiple concurrent Streams and interleave or coordinate them. They run asynchronously if the upstream Publishers are asynchronous or if they run on different Schedulers.
-
-• delayElements, interval, repeatWhen, retryWhen, etc.:  
-  – These operators often rely on a Scheduler (e.g., a timer thread) to schedule delays or repeated signals.
-
----
-
-## 3. Why Is map Synchronous While flatMap Can Be Asynchronous?
-
-• map:  
-  – Expects a "pure" function: (T → R).  
-  – It never internally subscribes to a separate Publisher; it just transforms the object and passes it along.  
-  – Execution continues on the same thread that emits the original item.
-
-• flatMap:  
-  – Expects a function that returns a Publisher (e.g., Flux or Mono).  
-  – Internally subscribes to each returned Publisher, which can run asynchronously (for instance, an HTTP call).  
-  – Merges multiple concurrent inner streams back into a single sequence, often on multiple threads.
-
----
-
-## 4. How Does This Work Under the Hood?
-
-At a high level:
-
-1. **Reactive Streams**:  
-   – Reactor implements the Reactive Streams specification, where each Operator is a "Publisher" that emits signals (onNext, onError, onComplete) to its downstream "Subscriber."  
-   – These signals flow synchronously by default, unless an operator specifically involves concurrency.
-
-2. **Schedulers**:  
-   – Operators like publishOn, subscribeOn, or those that rely on time (e.g., delayElements) employ Schedulers behind the scenes to shift work to a thread pool or timer.  
-   – Otherwise, the pipeline runs in the same thread from upstream to downstream.
-
-3. **Inner Publishers**:  
-   – When flatMap is used, each emission from the source triggers a subscription to a new (inner) Publisher. If that Publisher is itself asynchronous (for instance, an HTTP Mono that uses a custom Scheduler), the overall flow continues asynchronously.
-
----
-
-## Wrap-Up
-
-• **Synchronous operators** (like map) do all their work in the thread they are called on and never spawn concurrency themselves.  
-• **Asynchronous operators** (like flatMap) may merge multiple Publishers or schedule work on other threads, introducing concurrency or parallel processing in your stream.
-
-Project Reactor leaves you in charge of if and when concurrency happens. By default, signals flow synchronously in the caller's thread. You add concurrency or scheduling explicitly with operators such as subscribeOn, publishOn, or via transforming with flatMap returning an async Publisher.
-
 ## Hot vs. Cold Publishers
 - A cold publisher (the default for most Flux and Mono) starts emitting items when subscribed to. Each new Subscriber sees the entire sequence from the beginning.
 - A hot publisher emits items regardless of whether anyone is subscribed; late subscribers may miss prior signals.
@@ -186,564 +453,109 @@ Error signals end the sequence (similar to throwing an exception), but Reactor o
 
 For advanced usage, combine `doOnError(...)` side effects with `onErrorMap(...)`, `onErrorContinue(...)`, etc.
 
-## ConnectableFlux & ParallelFlux
+## ConnectableFlux
 
-### ConnectableFlux
-A `ConnectableFlux` is a specialized form of `Flux` that allows you to control when the subscription to the source happens through the `connect()` method. This is particularly useful for:
+Controls subscription timing for multiple subscribers. Used to:
+- Convert cold → hot publishers
+- Share subscriptions
+- Manage late subscribers
 
-1. **Hot Publishers**: Making a cold publisher hot
-2. **Multicasting**: Sharing a single subscription among multiple subscribers
-3. **Late Subscribers**: Managing late subscribers in a controlled way
-
-Here's an example of ConnectableFlux usage:
-
+### Basic Usage
 ```java
-// Create a ConnectableFlux that emits every second
-ConnectableFlux<Long> connectableFlux = Flux.interval(Duration.ofSeconds(1))
+// Manual control
+ConnectableFlux<Long> flux = Flux.interval(Duration.ofSeconds(1))
     .publish();
-
-// First subscriber
-connectableFlux.subscribe(i -> System.out.println("Subscriber 1: " + i));
-
-// Second subscriber
-connectableFlux.subscribe(i -> System.out.println("Subscriber 2: " + i));
-
-// Nothing happens until we connect
-connectableFlux.connect();
+flux.subscribe(i -> log.info("Sub1: {}", i));
+flux.subscribe(i -> log.info("Sub2: {}", i));
+flux.connect();  // Starts emission
 ```
 
-Common ConnectableFlux patterns:
-
+### Common Patterns
 ```java
-// Auto-connect when 2 subscribers are ready
-Flux<Integer> flux = Flux.range(1, 3)
+Flux.range(1, 3)
     .publish()
-    .autoConnect(2);
-
-// Ref-count: automatically connect when first subscriber arrives
-// and cancel when last subscriber leaves
-Flux<Integer> refCounted = Flux.range(1, 3)
-    .publish()
-    .refCount(1);
-
-// Ref-count with grace period
-Flux<Integer> refCountedGrace = Flux.range(1, 3)
-    .publish()
-    .refCount(1, Duration.ofSeconds(1));
+    .autoConnect(2);     // Start with N subscribers
+    .refCount(1);        // Start with first sub, stop when last leaves
+    .refCount(1, Duration.ofSeconds(1));  // Grace period before stopping
 ```
-
-### ParallelFlux vs flatMap with parallel()
-
-While both `ParallelFlux` and `flatMap` with `parallel()` scheduler can achieve parallelization, they serve different purposes and have different characteristics:
-
-#### ParallelFlux
-```java
-// Using ParallelFlux
-ParallelFlux<Integer> parallelFlux = Flux.range(1, 10)
-    .parallel(4)  // Split into 4 rails
-    .runOn(Schedulers.parallel())
-    .map(i -> performComputation(i));
-```
-
-#### FlatMap with parallel()
-```java
-// Using flatMap with parallel scheduler
-Flux<Integer> flatMapParallel = Flux.range(1, 10)
-    .flatMap(i -> Mono.just(i)
-        .map(this::performComputation)
-        .subscribeOn(Schedulers.parallel()),
-        4  // concurrency hint
-    );
-```
-
-Key Differences:
-
-1. **Work Distribution**:
-   - `ParallelFlux`: Evenly distributes work across a fixed number of rails (round-robin)
-   - `flatMap`: Dynamically schedules work as it comes, which can lead to uneven distribution
-
-2. **Ordering**:
-   - `ParallelFlux`: No guaranteed ordering by default
-   - `flatMap`: Can preserve ordering using `flatMapSequential` or `concatMap`
-
-3. **Backpressure Handling**:
-   - `ParallelFlux`: Maintains backpressure per rail
-   - `flatMap`: Handles backpressure across all concurrent operations
-
-4. **Use Cases**:
-   - `ParallelFlux`: Better for CPU-bound tasks with predictable workloads
-   - `flatMap`: Better for I/O-bound tasks or varying workloads
-
-Example showing the differences:
-
-```java
-public class ParallelizationExample {
-    
-    public static void main(String[] args) {
-        // ParallelFlux example
-        Flux.range(1, 10)
-            .parallel(2)
-            .runOn(Schedulers.parallel())
-            .map(i -> {
-                System.out.println("ParallelFlux processing " + i + 
-                    " on thread " + Thread.currentThread().getName());
-                return i * 2;
-            })
-            .sequential() // merge back to regular Flux
-            .subscribe();
-
-        // flatMap with parallel example
-        Flux.range(1, 10)
-            .flatMap(i -> Mono.just(i)
-                .map(val -> {
-                    System.out.println("flatMap processing " + val + 
-                        " on thread " + Thread.currentThread().getName());
-                    return val * 2;
-                })
-                .subscribeOn(Schedulers.parallel()),
-                2 // concurrency hint
-            )
-            .subscribe();
-    }
-
-    // Example showing ordering differences
-    public static void demonstrateOrdering() {
-        // ParallelFlux - order not guaranteed
-        Flux.range(1, 5)
-            .parallel()
-            .runOn(Schedulers.parallel())
-            .map(i -> i * 2)
-            .sequential()
-            .subscribe(i -> System.out.println("ParallelFlux: " + i));
-
-        // flatMap with ordered variants
-        Flux.range(1, 5)
-            .flatMapSequential(i -> Mono.just(i)
-                .map(val -> val * 2)
-                .subscribeOn(Schedulers.parallel())
-            )
-            .subscribe(i -> System.out.println("Ordered flatMap: " + i));
-    }
-
-    // Example showing backpressure handling
-    public static void demonstrateBackpressure() {
-        // ParallelFlux with backpressure
-        Flux.range(1, 100)
-            .parallel(4)
-            .runOn(Schedulers.parallel())
-            .map(i -> heavyComputation(i))
-            .sequential()
-            .limitRate(10) // backpressure per rail
-            .subscribe();
-
-        // flatMap with backpressure
-        Flux.range(1, 100)
-            .flatMap(i -> Mono.just(i)
-                .map(ParallelizationExample::heavyComputation)
-                .subscribeOn(Schedulers.parallel()),
-                10 // concurrency limit acts as backpressure
-            )
-            .subscribe();
-    }
-
-    private static int heavyComputation(int i) {
-        // Simulate heavy computation
-        try {
-            Thread.sleep(100);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        return i * 2;
-    }
-}
-```
-
-### When to Use Which
-
-1. Use `ParallelFlux` when:
-   - You have CPU-intensive tasks
-   - Work items take similar time to process
-   - You want explicit control over the number of parallel rails
-   - You need efficient backpressure handling per rail
-
-2. Use `flatMap` with parallel scheduler when:
-   - You have I/O-bound tasks
-   - Work items have varying processing times
-   - You need more flexibility in concurrency
-   - Order preservation is important
-   - You need dynamic concurrency adjustment
-
-Both approaches can be combined with other reactive operators, but `ParallelFlux` has a more limited set of operators available while in parallel mode (before calling `sequential()`).
 
 ## Context Propagation in Project Reactor
 
 ### What is Context Propagation?
 
-Context propagation is a mechanism that allows passing contextual information (like correlation IDs, security credentials, or transaction metadata) along the reactive pipeline without explicitly including it in the data flow. It's similar to ThreadLocal but works across asynchronous boundaries and different threads.
+ThreadLocal-like functionality for reactive streams, preserving context across async boundaries.
 
-### When is it Useful?
+### Use Cases
+- Distributed tracing
+- Security context
+- Transaction metadata
+- MDC logging
+- Request scoping
 
-Context propagation is particularly valuable in:
+### Core Concepts
+- Immutable
+- Flows downstream → upstream
+- Subscription-scoped
+- Read: `deferContextual()`
+- Write: `contextWrite()`
 
-1. Distributed tracing
-2. Security context propagation
-3. Transaction management
-4. MDC logging
-5. Request scoping in web applications
-
-### How it Works
-
-Context in Project Reactor:
-- Is immutable
-- Flows from downstream to upstream (opposite to data flow)
-- Is subscription-scoped
-- Can be read using `deferContextual()` or `transformDeferredContextual()`
-- Can be written using `contextWrite()`
-
-### Code Examples
-
-Here's a practical example demonstrating context propagation:
-
+### Basic Usage
 ```java
-public class ContextPropagationExample {
-    private static final String CORRELATION_ID = "correlationId";
-    private static final String USER_ID = "userId";
+// Write context
+Mono<Response> withContext = service.process()
+    .contextWrite(Context.of("userId", "123"));
 
-    public static void main(String[] args) {
-        // Simulating a service call with context
-        processRequest("GET /api/data", "user123")
-            .contextWrite(Context.of(CORRELATION_ID, "req-123"))
-            .subscribe(
-                response -> System.out.println("Response: " + response),
-                error -> System.err.println("Error: " + error)
-            );
-    }
+// Read context
+Mono<String> readContext = Mono.deferContextual(ctx ->
+    Mono.just("User: " + ctx.getOrDefault("userId", "anonymous"))
+);
 
-    public static Mono<String> processRequest(String request, String userId) {
-        return Mono.deferContextual(ctx -> {
-            // Read from context
-            String correlationId = ctx.getOrDefault(CORRELATION_ID, "unknown");
-            
-            return executeRequest(request)
-                .transformDeferredContextual((mono, innerCtx) -> {
-                    // Log with context information
-                    System.out.println(String.format(
-                        "Processing request [correlationId=%s, userId=%s]: %s",
-                        correlationId,
-                        innerCtx.getOrDefault(USER_ID, "anonymous"),
-                        request
-                    ));
-                    return mono;
-                })
-                // Add more context information
-                .contextWrite(Context.of(USER_ID, userId));
-        });
-    }
-
-    private static Mono<String> executeRequest(String request) {
-        return Mono.deferContextual(ctx -> {
-            // Access context in business logic
-            String correlationId = ctx.get(CORRELATION_ID);
-            String userId = ctx.get(USER_ID);
-            
-            // Simulate API call
-            return Mono.just(String.format(
-                "Processed request for user %s with correlationId %s",
-                userId,
-                correlationId
-            ));
-        });
-    }
-}
+// Combine read/write
+Mono<String> process = Mono.deferContextual(ctx -> {
+    String userId = ctx.get("userId");
+    return callService(userId)
+        .contextWrite(Context.of("traceId", "xyz"));
+});
 ```
 
-### Advanced Context Usage with Hooks
-
-Project Reactor 3.5.0 introduced enhanced context propagation support through hooks:
-
+### Automatic Propagation (3.5.0+)
 ```java
-public class ContextPropagationWithHooks {
-    public static void main(String[] args) {
-        // Enable automatic context propagation
-        Hooks.enableAutomaticContextPropagation();
+// Enable ThreadLocal propagation
+Hooks.enableAutomaticContextPropagation();
 
-        // Create a ThreadLocal for demonstration
-        ThreadLocal<String> threadLocal = new ThreadLocal<>();
-        threadLocal.set("original-thread-value");
+ThreadLocal<String> threadLocal = new ThreadLocal<>();
+threadLocal.set("value");
 
-        Mono.defer(() -> {
-            String value = threadLocal.get();
-            return Mono.just("Processing with " + value);
-        })
-        .publishOn(Schedulers.boundedElastic())
-        .doOnNext(result -> {
-            // ThreadLocal value is preserved across thread boundaries
-            System.out.println(result + " (ThreadLocal: " + threadLocal.get() + ")");
-        })
-        .subscribe();
-    }
-}
+Mono.defer(() -> Mono.just(threadLocal.get()))
+    .publishOn(Schedulers.boundedElastic())
+    .subscribe(); // ThreadLocal value preserved
 ```
 
 ### Best Practices
-
-1. **Immutability**: Treat context as immutable and use `contextWrite()` to create new contexts with additional values.
-
 ```java
-// Good
+// DO: Immutable updates
 mono.contextWrite(ctx -> ctx.put("key", "value"))
 
-// Avoid modifying context directly
-mono.contextWrite(ctx -> {
-    ((Context) ctx).put("key", "value"); // Wrong!
-    return ctx;
-})
-```
+// DO: Default values
+ctx.getOrDefault("key", "default")
 
-2. **Context Access**: Use `deferContextual()` for context-dependent operations.
-
-```java
-// Good
-Mono.deferContextual(ctx -> 
-    Mono.just("Value for " + ctx.get("key"))
-)
-
-// Avoid storing context in variables
+// DON'T: Store context
 Context globalCtx; // Wrong!
-```
 
-3. **Error Handling**: Always provide default values when reading from context.
-
-```java
-// Good
-ctx.getOrDefault("key", "defaultValue")
-
-// Instead of
-try {
-    ctx.get("key")
-} catch (Exception e) {
-    // Handle missing key
-}
+// DON'T: Modify directly
+ctx.put("key", "value"); // Wrong!
 ```
 
 Context propagation is particularly useful in microservices architectures where you need to maintain contextual information across service boundaries and asynchronous operations. It provides a clean way to pass metadata without polluting your business logic or method signatures.
 
-## ConnectableFlux & ParallelFlux
-- `ConnectableFlux` allows multiple subscribers to observe the same data source together, but the source only starts producing once "connected."
-- `ParallelFlux` splits a Flux across multiple "rails" (threads) for parallel processing. You typically merge or reduce these rails back into one Flux when you are finished parallelizing.
+## Core Types
 
-These core objects and features form the backbone of Reactor. By chaining operators on Flux or Mono, controlling concurrency with Schedulers, handling errors proactively, and optionally sharing or splitting data streams with specialized types, you can build expressive, reactive applications that handle data in a non-blocking, event-driven manner.
+### ConnectableFlux
+- Controls multi-subscriber timing
+- Source starts only after `connect()`
+- Used for shared subscriptions
 
-# Appendix: 
-
-### Additional Threading Explanation
-
-In many Java applications, you may observe additional threads running even before your Reactive pipeline starts operating (for example, before a flatMap operator is invoked). Common threads you might see include:
-
-• main – The primary application thread that launches your code.  
-• Finalizer – A JVM-managed thread that finalizes objects whose finalizers have not yet been invoked.  
-• ReferenceHandler – A JVM-managed thread that handles reference queues (e.g., for SoftReferences, WeakReferences).  
-• SignalDispatcher – A low-level JVM thread that processes operating system signals (e.g., signals for handling Ctrl+C interrupts on some systems).  
-
-These threads are part of the basic Java Virtual Machine mechanism and are not introduced by Reactor or any other concurrency library. They are generally used for internal bookkeeping, garbage collection, and system-level signal handling. Consequently, even if your code is configured to run on a single thread from a Reactor perspective, the JVM itself can still have multiple system threads active alongside your application logic.
-
-## Understanding Schedulers in Project Reactor
-
-Schedulers are Project Reactor's mechanism for controlling execution contexts. Each scheduler type is optimized for different use cases.
-
-### Types of Schedulers
-
-1. **Schedulers.boundedElastic()**
-```java
-// Best for I/O operations
-Flux.fromIterable(files)
-    .flatMap(file -> Mono.fromCallable(() -> readFile(file))
-        .subscribeOn(Schedulers.boundedElastic()))
-```
-- Characteristics:
-  - Creates new worker pools as needed
-  - Caps number of maximum backing threads (default: CPU cores × 10)
-  - Queues tasks when all threads are busy
-  - Releases idle threads after 60s
-  - Best for: I/O operations, blocking calls, JDBC operations
-
-2. **Schedulers.parallel()**
-```java
-// Best for CPU-intensive tasks
-Flux.range(1, 100)
-    .parallel()
-    .runOn(Schedulers.parallel())
-    .map(this::computeIntensive)
-    .sequential()
-```
-- Characteristics:
-  - Fixed thread pool
-  - Number of threads = CPU cores
-  - Never releases threads
-  - Best for: CPU-intensive computations, mathematical calculations
-
-3. **Schedulers.single()**
-```java
-// Best for sequential operations
-Flux.range(1, 100)
-    .publishOn(Schedulers.single())
-    .map(i -> performSequentialOperation(i))
-```
-- Characteristics:
-  - Single worker thread
-  - Reused across calls
-  - Best for: Sequential operations, maintaining order
-
-4. **Schedulers.immediate()**
-```java
-// Executes in the current thread
-Flux.range(1, 100)
-    .publishOn(Schedulers.immediate())
-    .map(i -> i * 2)
-```
-- Characteristics:
-  - Executes in calling thread
-  - No threading overhead
-  - Best for: Testing, debugging
-
-### Practical Examples
-
-1. **Mixed Workload Handling**
-```java
-public class SchedulerExample {
-    public Flux<ProcessedData> processData(List<RawData> data) {
-        return Flux.fromIterable(data)
-            // CPU-intensive preprocessing
-            .parallel()
-            .runOn(Schedulers.parallel())
-            .map(this::preprocess)
-            .sequential()
-            // I/O operations
-            .flatMap(preprocessed -> 
-                Mono.fromCallable(() -> saveToDatabase(preprocessed))
-                    .subscribeOn(Schedulers.boundedElastic())
-            );
-    }
-
-    private ProcessedData preprocess(RawData data) {
-        // CPU-intensive operation
-        return /* computation */;
-    }
-
-    private SavedData saveToDatabase(ProcessedData data) {
-        // Blocking I/O operation
-        return /* database call */;
-    }
-}
-```
-
-2. **HTTP Client with Timeouts**
-```java
-public class ReactiveHttpClient {
-    public Mono<Response> fetchWithTimeout(String url, Duration timeout) {
-        return Mono.fromCallable(() -> blockingHttpCall(url))
-            .subscribeOn(Schedulers.boundedElastic())
-            .timeout(timeout)
-            .publishOn(Schedulers.parallel()) // Process response
-            .map(this::processResponse);
-    }
-}
-```
-
-3. **Resource Management**
-```java
-public class ResourceManager {
-    private final Scheduler dedicatedScheduler = 
-        Schedulers.newBoundedElastic(
-            10, // max threads
-            100, // queue size
-            "db-ops"
-        );
-
-    public Mono<Data> performDatabaseOperation() {
-        return Mono.fromCallable(this::dbCall)
-            .subscribeOn(dedicatedScheduler)
-            .doFinally(signal -> {
-                if (isShuttingDown) {
-                    dedicatedScheduler.dispose();
-                }
-            });
-    }
-}
-```
-
-### Best Practices
-
-1. **Choosing the Right Scheduler**
-```java
-// GOOD: I/O operations on boundedElastic
-Mono.fromCallable(() -> fileSystem.read())
-    .subscribeOn(Schedulers.boundedElastic())
-
-// GOOD: CPU-intensive on parallel
-Flux.range(1, 1000)
-    .parallel()
-    .runOn(Schedulers.parallel())
-    .map(this::heavyComputation)
-
-// BAD: Blocking I/O on parallel
-Flux.range(1, 1000)
-    .parallel()
-    .runOn(Schedulers.parallel())
-    .map(i -> blockingDatabaseCall()) // Don't do this!
-```
-
-2. **Thread Pool Sizing**
-```java
-// Custom bounded elastic pool for specific workload
-Scheduler customScheduler = Schedulers.newBoundedElastic(
-    Runtime.getRuntime().availableProcessors() * 2, // threads
-    1000, // queueSize
-    "custom-pool"
-);
-
-// Use for specific operations
-Mono.fromCallable(() -> operation())
-    .subscribeOn(customScheduler)
-```
-
-3. **Monitoring and Metrics**
-```java
-public class SchedulerMetrics {
-    private final MeterRegistry registry;
-
-    public Mono<Data> instrumentedOperation() {
-        return Mono.fromCallable(() -> operation())
-            .subscribeOn(Schedulers.boundedElastic())
-            .name("my-operation")
-            .tag("scheduler", "boundedElastic")
-            .metrics();
-    }
-}
-```
-
-### Performance Considerations
-
-1. **Thread Switching Overhead**
-- Minimize unnecessary thread switches
-- Use `publishOn` only when needed
-- Consider using `immediate()` for testing
-
-2. **Resource Management**
-- Dispose custom schedulers when no longer needed
-- Monitor thread pool utilization
-- Set appropriate queue sizes for bounded schedulers
-
-3. **Backpressure Awareness**
-- BoundedElastic queues tasks when overloaded
-- Parallel scheduler can lead to overflow if not properly backpressured
-- Use `onBackpressureBuffer` or similar operators when needed
-
-This understanding of Schedulers helps in:
-- Optimizing application performance
-- Preventing resource exhaustion
-- Proper handling of blocking operations
-- Efficient CPU utilization
-- Better resource management
-
-Remember: The choice of Scheduler significantly impacts your application's behavior and performance. Always profile and test with realistic workloads to ensure optimal configuration.
+### ParallelFlux
+- Splits Flux into parallel rails
+- Processes data across multiple threads
+- Merge via `sequential()` back to Flux
