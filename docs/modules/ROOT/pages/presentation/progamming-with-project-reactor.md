@@ -1,51 +1,6 @@
-# Project Reactor Programming Guide
+# Project Reactor Java Programming Guide
 
-## Outline
-1. [Core Concepts](#core-concepts)
-   - [Operation Flow](#operation-flow)
-   - [Backpressure](#backpressure)
-   - [Reactive Streams](#reactive-streams)
-   - [Mono & Flux Publishers](#mono--flux-publishers)
-
-2. [Common Operators](#common-operators-by-category)
-   - [Transformation](#transformation)
-   - [Filtering](#filtering)
-   - [Combination](#combination-examples)
-   - [Reduction](#reduction)
-   - [Side Effects](#side-effects)
-
-3. [Execution Models](#sync-vs-async-operators)
-   - [Synchronous Operators](#synchronous-operators)
-   - [Asynchronous Operators](#asynchronous-operators)
-
-4. [Error Handling](#error-handling)
-   - [Fallback Values](#1-return-fallback-value)
-   - [Backup Publishers](#2-switch-to-backup-publisher)
-   - [Error Recovery](#3-continue-after-error-ignore)
-   - [Retry Strategies](#4-retry-with-backoff)
-
-5. [Schedulers and Threading](#schedulers-and-threading)
-   - [Scheduler Types](#scheduler-types)
-   - [Thread Management](#examples-of-schedulers-in-use)
-
-6. [Advanced Topics](#advanced-topics)
-   - [Hot vs Cold Publishers](#hot-vs-cold-publishers)
-   - [Context Propagation](#context-propagation-downstream---upstream)
-
-7. [Design Patterns & Best Practices](#2-design-patterns--best-practices)
-   - [Common Reactive Patterns](#common-reactive-patterns)
-   - [Performance Optimization](#performance-optimization)
-   - [Testing Strategies](#testing-strategies)
-
-8. [Appendix](#appendix)
-   - [Core Concepts Deep Dive](#core-concepts-of-project-reactor)
-   - [Mono and Flux Publishers](#mono-and-flux-publishers)
-   - [Schedulers and Threading](#schedulers-and-threading-1)
-   - [Hot vs Cold Publishers](#hot-vs-cold-publishers-1)
-   - [Error Handling](#error-handling-1)
-   - [Context Propagation](#context-propagation-in-project-reactor)
-
-9. [Links](#links)
+[[_TOC_]]
 
 ## Core Concepts
 
@@ -54,7 +9,7 @@
 2. Subscriber.request(n) → signals demand (backpressure)
 3. Publisher.onNext()/onComplete()/onError() → emits data
 
-```mermaid
+::: mermaid
 sequenceDiagram
     participant P as Publisher
     participant Sub as Subscriber
@@ -76,7 +31,7 @@ sequenceDiagram
         P-->>Sub: onError(error)
     end
     deactivate S
-```
+:::
 
 ### Backpressure
 - Subscriber controls emission rate via `request(n)` calls
@@ -183,7 +138,7 @@ Flux.combineLatest(
 ) // -> C0, C1, C2...
 ```
 
-```mermaid
+::: mermaid
 graph LR
     subgraph merge
     A1[1] --> M{merge}
@@ -192,9 +147,9 @@ graph LR
     B2[4] --> M
     M --> R[1,3,2,4]
     end
-```
+:::
 
-```mermaid
+::: mermaid
 graph LR
     subgraph concat
     A1[1] --> C{concat}
@@ -203,9 +158,9 @@ graph LR
     B2[4] --> C
     C --> R[1,2,3,4]
     end
-```
+:::
 
-```mermaid
+::: mermaid
 graph LR
     subgraph zip
     A1[A] --> Z{zip}
@@ -214,9 +169,9 @@ graph LR
     B2[2] --> Z
     Z --> R[A1,B2]
     end
-```
+:::
 
-```mermaid
+::: mermaid
 graph LR
     subgraph combineLatest
     A1[A] --> CL{combine}
@@ -225,7 +180,7 @@ graph LR
     B2[2] --> CL
     CL --> R[B2]
     end
-```
+:::
 
 ```java
 // Reduction
@@ -349,7 +304,7 @@ immediate()      // Current thread
 fromExecutorService(executor) // Custom thread pool
 ```
 
-```mermaid
+::: mermaid
 graph TB
     subgraph boundedElastic
     BE[boundedElastic]
@@ -374,25 +329,25 @@ graph TB
     S --> ST[Single Thread]
     style S fill:#ff9,stroke:#333
     end
-```
+:::
 
-```mermaid
+::: mermaid
 graph LR
     subgraph publishOn
     A[Operation1] -->|Thread1| PO(publishOn)
     PO -->|Thread2| B[Operation2]
     B -->|Thread2| C[Operation3]
     end
-```
+:::
 
-```mermaid
+::: mermaid
 graph LR
     subgraph subscribeOn
     A[Operation1] -->|Thread2| SO(subscribeOn)
     SO -->|Thread2| B[Operation2]
     B -->|Thread2| C[Operation3]
     end
-```
+:::
 
 ### Examples of Schedulers In Use
 
@@ -939,4 +894,18 @@ Context propagation is particularly useful in microservices architectures where 
 [retry]: https://projectreactor.io/docs/core/release/api/reactor/util/retry/Retry.html
 [backpressure]: https://projectreactor.io/docs/core/release/reference/#backpressure
 [using]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#using-java.util.concurrent.Callable-java.util.function.Function-java.util.function.Consumer-
+
+# Documentation Links
+
+- [Map Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#map-java.util.function.Function-)
+- [FlatMap Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#flatMap-java.util.function.Function-)
+- [Handle Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#handle-java.util.function.BiConsumer-)
+- [Merge Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#merge-org.reactivestreams.Publisher...-)
+- [Concat Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#concat-org.reactivestreams.Publisher...-)
+- [Zip Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#zip-org.reactivestreams.Publisher-org.reactivestreams.Publisher-)
+- [CombineLatest Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#combineLatest-java.util.function.Function-org.reactivestreams.Publisher...-)
+- [Error Handling Guide](https://projectreactor.io/docs/core/release/reference/#error.handling)
+- [Retry Documentation](https://projectreactor.io/docs/core/release/api/reactor/util/retry/Retry.html)
+- [Backpressure Guide](https://projectreactor.io/docs/core/release/reference/#backpressure)
+- [Using Operator Documentation](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#using-java.util.concurrent.Callable-java.util.function.Function-java.util.function.Consumer-)
 
