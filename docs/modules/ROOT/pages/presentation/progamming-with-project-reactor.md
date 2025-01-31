@@ -54,6 +54,67 @@ Processor<T,R>   -> transform data
 5. Publisher.onComplete()       // or onError()
 ```
 
+### Reactive Streams - Key Components
+| Component | Role | Direction |
+|-----------|------|-----------|
+| `Publisher<T>` | *Source* of data emissions | → downstream |
+| `Subscriber<T>` | *Consumer* of data | ← upstream |
+| `Subscription` | *Controls* backpressure | ↔ bidirectional |
+| `Processor<T,R>` | *Transforms* data | ↔ bidirectional |
+
+---
+
+### Operator Categories Quick Reference
+| Category | Purpose | Key Operators | Thread Behavior |
+|----------|---------|---------------|----------------|
+| Transform | Change data | `map`, `flatMap`, `handle` | Sync/Async |
+| Filter | Reduce items | `filter`, `take`, `distinct` | Sync |
+| Combine | Merge streams | `merge`, `zip`, `concat` | Async |
+| Reduce | Aggregate data | `reduce`, `collect`, `count` | Sync |
+| Side Effect | External actions | `doOnNext`, `doOnError` | Sync |
+
+---
+
+### Scheduler Selection Guide
+| Scheduler | Use Case | Thread Pool | Best For |
+|-----------|----------|-------------|-----------|
+| `boundedElastic()` | *I/O Operations* | Dynamic (CPU×10) | Blocking calls |
+| `parallel()` | *CPU Work* | Fixed (CPU cores) | Computations |
+| `single()` | *Sequential* | Single thread | Ordered ops |
+| `immediate()` | *Testing* | Current thread | Debug/Test |
+
+---
+
+### Error Handling Strategies
+| Strategy | Operator | When to Use | Example |
+|----------|----------|-------------|---------|
+| *Fallback Value* | `onErrorReturn` | Known error → default | `flux.onErrorReturn(NOT_FOUND, defaultItem)` |
+| *Alternative Path* | `onErrorResume` | Try backup source | `flux.onErrorResume(e -> backupService.get())` |
+| *Retry* | `retryWhen` | Transient failures | `flux.retryWhen(Retry.backoff(3, Duration.ofMillis(100)))` |
+| *Continue* | `onErrorContinue` | Skip bad items | `flux.onErrorContinue((e,o) -> log.warn("Skipped: {}", o))` |
+
+---
+
+### Hot vs Cold Publishers - Decision Guide
+| Aspect | **Cold** | **Hot** |
+|--------|----------|---------|
+| *Activation* | On subscribe | Immediate |
+| *History* | Full replay | Only new items |
+| *Subscribers* | Independent | Shared |
+| *Use Case* | HTTP/Files | WebSocket/Events |
+| *Example* | `Flux.fromIterable()` | `Sinks.many()` |
+
+---
+
+### Common Reactive Patterns Summary
+| Pattern | Purpose | Key Components |
+|---------|---------|----------------|
+| *Circuit Breaker* | Prevent cascading failures | `CircuitBreaker`, `timeout`, `retry` |
+| *Bulkhead* | Isolate failures | `boundedElastic`, `maxConcurrent` |
+| *Cache* | Optimize repeated requests | `cache()`, `Caffeine` |
+| *Saga* | Distributed transactions | `flatMap` chain, rollback |
+| *Rate Limiter* | Control throughput | `delayElements`, `flatMap(maxConcurrent)` |
+
 ### Mono & Flux Publishers
 
 ```java
