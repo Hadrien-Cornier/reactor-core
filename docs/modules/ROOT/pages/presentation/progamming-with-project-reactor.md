@@ -8,18 +8,85 @@
 3. Publisher.onNext()/onComplete()/onError() → emits data
 
 ### Backpressure
-- Subscriber controls emission rate
+- Subscriber controls emission rate via `request(n)` calls
 - Handled via `limitRate`, `onBackpressureDrop`
 - Each operator acts as Processor: upstream → transform → downstream
 - Request flow: downstream → upstream
 
-### Publishers
+### Reactive Streams
+```java
+Publisher<T>     -> emit data
+Subscriber<T>    -> consume data
+Subscription     -> control demand (backpressure)
+Processor<T,R>   -> transform data
+```
+
+### Mono & Flux
+
 ```java
 // Mono: 0-1 items
 Mono<T>   // async, lazy, single-value
 
 // Flux: 0-N items
 Flux<T>   // async, lazy, stream
+```
+
+```java
+// Common Creation Methods
+Mono.just(value)
+Mono.fromCallable(() -> blockingCall())
+Mono.defer(() -> dynamicMono())
+Mono.empty()
+Mono.error(ex)
+
+Flux.just(1,2,3)
+Flux.fromIterable(list)
+Flux.range(1,10)
+Flux.interval(Duration.ofSeconds(1))
+```
+
+## Sync vs Async Operators
+
+### Synchronous Operators
+- Execute in same thread
+- No concurrency introduced
+```java
+// map: pure transform (T → R)
+flux.map(i -> i * 2)
+    .filter(i -> i > 5)
+    .reduce(0, Integer::sum)
+```
+
+Common sync operators:
+- `map`: one-to-one transform
+- `filter`, `take`, `reduce`: inline processing
+- `publishOn`/`subscribeOn`: scheduling call only
+
+### Asynchronous Operators
+- May execute across threads
+- Introduce concurrency
+```java
+// flatMap: async operations
+flux.flatMap(i -> webClient.get()
+        .uri("/api/{i}", i)
+        .retrieve()
+        .bodyToMono(Response.class))
+    .mergeWith(otherFlux)
+    .delayElements(Duration.ofMillis(100))
+```
+
+Common async operators:
+- `flatMap`: async transformations
+- `merge`/`zip`: combine streams
+- `delay`/`interval`: timer operations
+
+### Error Handling
+```java
+flux.onErrorReturn(fallback)      // Return value
+    .onErrorResume(ex -> backup)  // Switch publisher
+    .onErrorContinue((ex,obj) -> 
+         log.error("Skipping: {}", obj)) // Continue after error
+    .retry(3)                     // Retry n times
 ```
 
 ### Threading
@@ -39,30 +106,6 @@ immediate()      // Current thread
 fromExecutorService(executor) // Custom thread pool
 ```
 
-### Reactive Streams
-```java
-Publisher<T>     -> emit data
-Subscriber<T>    -> consume data
-Subscription     -> control demand (backpressure)
-Processor<T,R>   -> transform data
-```
-
-Key Point: Subscribers control demand via `request(n)` calls, enabling backpressure.
-
-### Mono & Flux
-```java
-// Common Creation Methods
-Mono.just(value)
-Mono.fromCallable(() -> blockingCall())
-Mono.defer(() -> dynamicMono())
-Mono.empty()
-Mono.error(ex)
-
-Flux.just(1,2,3)
-Flux.fromIterable(list)
-Flux.range(1,10)
-Flux.interval(Duration.ofSeconds(1))
-```
 
 ### Detailed Scheduler Types
 
@@ -131,15 +174,6 @@ hot.onNext(1); // Emitted regardless of subscribers
 
 // Convert cold to hot
 Flux<Integer> shared = cold.share(); // Uses multicast
-```
-
-### Error Handling
-```java
-flux.onErrorReturn(fallback)      // Return value
-    .onErrorResume(ex -> backup)  // Switch publisher
-    .onErrorContinue((ex,obj) -> 
-         log.error("Skipping: {}", obj)) // Continue after error
-    .retry(3)                     // Retry n times
 ```
 
 ### Context Propagation (Downstream -> Upstream)
@@ -369,49 +403,6 @@ class MetricsExample {
 }
 ```
 
-## Sync vs Async Operators
-
-### Synchronous Operators
-- Execute in same thread
-- No concurrency introduced
-```java
-// map: pure transform (T → R)
-flux.map(i -> i * 2)
-    .filter(i -> i > 5)
-    .reduce(0, Integer::sum)
-```
-
-Common sync operators:
-- `map`: one-to-one transform
-- `filter`, `take`, `reduce`: inline processing
-- `publishOn`/`subscribeOn`: scheduling call only
-
-### Asynchronous Operators
-- May execute across threads
-- Introduce concurrency
-```java
-// flatMap: async operations
-flux.flatMap(i -> webClient.get()
-        .uri("/api/{i}", i)
-        .retrieve()
-        .bodyToMono(Response.class))
-    .mergeWith(otherFlux)
-    .delayElements(Duration.ofMillis(100))
-```
-
-Common async operators:
-- `flatMap`: async transformations
-- `merge`/`zip`: combine streams
-- `delay`/`interval`: timer operations
-
-### Key Differences
-1. **map vs flatMap**:
-   - `map`: (T → R) pure transform
-   - `flatMap`: (T → Publisher<R>) with subscriptions
-
-2. **Threading Model**:
-   - Default: synchronous in caller's thread
-   - Async: explicit via Schedulers or async operators
 
 ## Next Steps
 1. Practice with [Project Reactor Test](https://github.com/reactor/reactor-core/tree/main/reactor-test)
@@ -531,7 +522,7 @@ Mono.defer(() -> Mono.just(threadLocal.get()))
     .subscribe(); // ThreadLocal value preserved
 ```
 
-### Best Practices
+### Context : Do and Don't
 ```java
 // DO: Immutable updates
 mono.contextWrite(ctx -> ctx.put("key", "value"))
@@ -548,14 +539,3 @@ ctx.put("key", "value"); // Wrong!
 
 Context propagation is particularly useful in microservices architectures where you need to maintain contextual information across service boundaries and asynchronous operations. It provides a clean way to pass metadata without polluting your business logic or method signatures.
 
-## Core Types
-
-### ConnectableFlux
-- Controls multi-subscriber timing
-- Source starts only after `connect()`
-- Used for shared subscriptions
-
-### ParallelFlux
-- Splits Flux into parallel rails
-- Processes data across multiple threads
-- Merge via `sequential()` back to Flux
