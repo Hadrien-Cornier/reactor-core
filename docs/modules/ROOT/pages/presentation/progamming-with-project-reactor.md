@@ -1,5 +1,50 @@
 # Project Reactor Programming Guide
 
+## Outline
+1. [Core Concepts](#core-concepts)
+   - [Operation Flow](#operation-flow)
+   - [Backpressure](#backpressure)
+   - [Reactive Streams](#reactive-streams)
+   - [Mono & Flux Publishers](#mono--flux-publishers)
+
+2. [Common Operators](#common-operators-by-category)
+   - [Transformation](#transformation)
+   - [Filtering](#filtering)
+   - [Combination](#combination-examples)
+   - [Reduction](#reduction)
+   - [Side Effects](#side-effects)
+
+3. [Execution Models](#sync-vs-async-operators)
+   - [Synchronous Operators](#synchronous-operators)
+   - [Asynchronous Operators](#asynchronous-operators)
+
+4. [Error Handling](#error-handling)
+   - [Fallback Values](#1-return-fallback-value)
+   - [Backup Publishers](#2-switch-to-backup-publisher)
+   - [Error Recovery](#3-continue-after-error-ignore)
+   - [Retry Strategies](#4-retry-with-backoff)
+
+5. [Schedulers and Threading](#schedulers-and-threading)
+   - [Scheduler Types](#scheduler-types)
+   - [Thread Management](#examples-of-schedulers-in-use)
+
+6. [Advanced Topics](#advanced-topics)
+   - [Hot vs Cold Publishers](#hot-vs-cold-publishers)
+   - [Context Propagation](#context-propagation-downstream---upstream)
+
+7. [Design Patterns & Best Practices](#2-design-patterns--best-practices)
+   - [Common Reactive Patterns](#common-reactive-patterns)
+   - [Performance Optimization](#performance-optimization)
+   - [Testing Strategies](#testing-strategies)
+
+8. [Appendix](#appendix)
+   - [Core Concepts Deep Dive](#core-concepts-of-project-reactor)
+   - [Mono and Flux Publishers](#mono-and-flux-publishers)
+   - [Schedulers and Threading](#schedulers-and-threading-1)
+   - [Hot vs Cold Publishers](#hot-vs-cold-publishers-1)
+   - [Error Handling](#error-handling-1)
+   - [Context Propagation](#context-propagation-in-project-reactor)
+
 ## Core Concepts
 
 ### Operation Flow
@@ -28,7 +73,31 @@ Processor<T,R>   -> transform data
 5. Publisher.onComplete()       // or onError()
 ```
 
-### Common Operators by Category
+### Mono & Flux Publishers
+
+```java
+// Mono: 0-1 items
+Mono<T>   // async, lazy, single-value
+
+// Flux: 0-N items
+Flux<T>   // async, lazy, stream
+```
+
+```java
+// Common Creation Methods
+Mono.just(value)
+Mono.fromCallable(() -> blockingCall())
+Mono.defer(() -> dynamicMono())
+Mono.empty()
+Mono.error(ex)
+
+Flux.just(1,2,3)
+Flux.fromIterable(list)
+Flux.range(1,10)
+Flux.interval(Duration.ofSeconds(1))
+```
+
+## Common Operators by Category
 ```java
 // Transformation
 map()           // 1-to-1 value change
@@ -138,30 +207,6 @@ doOnError()     // error handling
 doFinally()     // cleanup
 ```
 
-### Mono & Flux
-
-```java
-// Mono: 0-1 items
-Mono<T>   // async, lazy, single-value
-
-// Flux: 0-N items
-Flux<T>   // async, lazy, stream
-```
-
-```java
-// Common Creation Methods
-Mono.just(value)
-Mono.fromCallable(() -> blockingCall())
-Mono.defer(() -> dynamicMono())
-Mono.empty()
-Mono.error(ex)
-
-Flux.just(1,2,3)
-Flux.fromIterable(list)
-Flux.range(1,10)
-Flux.interval(Duration.ofSeconds(1))
-```
-
 ## Sync vs Async Operators
 
 ### Synchronous Operators
@@ -197,16 +242,45 @@ Common async operators:
 - `merge`/`zip`: combine streams
 - `delay`/`interval`: timer operations
 
-### Error Handling
+## Error Handling
 ```java
-flux.onErrorReturn(fallback)      // Return value
-    .onErrorResume(ex -> backup)  // Switch publisher
-    .onErrorContinue((ex,obj) -> 
-         log.error("Skipping: {}", obj)) // Continue after error
-    .retry(3)                     // Retry n times
+// 1. Return Fallback Value
+flux.onErrorReturn(                    // Static fallback
+    IllegalStateException.class,       // Only for this error
+    defaultValue                       // Fallback value
+)
+
+// 2. Switch to Backup Publisher
+flux.onErrorResume(                    // Dynamic fallback
+    TimeoutException.class,           // Only for this error
+    ex -> backupService.getData())     // Backup publisher
+)
+
+// 3. Continue After Error (ignore)
+flux.onErrorContinue(                  // Skip error, continue
+    ValidationException.class,         // Only for this error
+    (error, item) -> log.warn("Invalid: {}", item)
+)
+
+// 4. Retry with Backoff
+flux.retryWhen(Retry.backoff(         // Exponential backoff
+    3,                               // Max attempts
+    Duration.ofMillis(100)           // Initial delay
+).maxBackoff(Duration.ofSeconds(5))  // Max delay
+)
+
+// Common Patterns
+service.getData()
+    .timeout(Duration.ofSeconds(1))              // Timeout after 1s
+    .onErrorResume(TimeoutException.class,       // On timeout
+        ex -> backupService.getData())           // Use backup
+    .onErrorReturn(IllegalStateException.class,  // On state error
+        Collections.emptyList())                 // Return empty
+    .doOnError(e -> metrics.recordError(e))      // Record all errors
+    .retry(3)                                    // Retry 3 times
 ```
 
-### Threading
+## Schedulers and Threading
 ```java
 // Default: subscriber's thread
 flux.subscribe()
@@ -329,18 +403,7 @@ Flux.range(1, 100)
     .publishOn(Schedulers.immediate())
     .map(i -> i * 2)
 ```
-
-### Async Operations (flatMap)
-```java
-// Simple async example
-userIds.flatMap(id -> 
-    // Async HTTP call returning Mono<User>
-    webClient.get()
-             .uri("/users/{id}", id)
-             .retrieve()
-             .bodyToMono(User.class)
-).subscribe()
-```
+## Advanced Topics
 
 ### Hot vs Cold Publishers
 ```java
@@ -389,8 +452,8 @@ Mono.deferContextual(ctx ->
 Mono<Response> withBreaker(Request req) {
     return Mono.just(req)
         .transform(CircuitBreaker.create("api")
-            .run())
-        .timeout(Duration.ofSeconds(1))
+                .run())
+            .timeout(Duration.ofSeconds(1))
         .retryWhen(Retry.backoff(3, Duration.ofMillis(100)))
         .onErrorResume(ex -> fallback(req));
 }
@@ -439,7 +502,7 @@ class OrderSaga {
             releaseInventory(order),
             refundPayment(order),
             cancelShipment(order)
-        ).then();
+                ).then();
     }
 }
 
@@ -485,7 +548,7 @@ onBackpressureBuffer(
 // - DROP_LATEST : Ignore new element
 // - ERROR       : Signal error
 Flux<List<Event>> batchEvents(Flux<Event> source) {
-    return source
+        return source
         .bufferTimeout(100, Duration.ofMillis(50))  // Size or time
         .onBackpressureBuffer(10_000, BufferOverflowStrategy.DROP_OLDEST);
 }
@@ -514,7 +577,7 @@ class ResourceManagement {
             r -> process(r),          // Use
             Resource::close,          // Cleanup
             true                      // Eager cleanup
-        );
+            );
     }
 }
 ```

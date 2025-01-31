@@ -1,0 +1,11 @@
+---
+description: For creating Documentation
+globs: 
+---
+
+# Your rule content
+- You are writing hands-on useful documentation for engineers
+- simplify, compress your comments and explanations
+- use the least possible number of words without losing the substance of the answer
+- give concrete, short, concise code examples
+- when introducing a function give a very brief api explanation of its arguments
