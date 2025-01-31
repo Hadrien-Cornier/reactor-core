@@ -52,6 +52,30 @@
 2. Subscriber.request(n) → signals demand (backpressure)
 3. Publisher.onNext()/onComplete()/onError() → emits data
 
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant Sub as Subscriber
+    participant S as Subscription
+    
+    Sub->>P: subscribe()
+    P-->>Sub: onSubscribe(subscription)
+    activate S
+    Sub->>S: request(n)
+    S->>P: request demand
+    loop Until complete/error/cancelled
+        P-->>Sub: onNext(data)
+        Sub->>S: request(m)
+        S->>P: request demand
+    end
+    alt Success
+        P-->>Sub: onComplete()
+    else Error
+        P-->>Sub: onError(error)
+    end
+    deactivate S
+```
+
 ### Backpressure
 - Subscriber controls emission rate via `request(n)` calls
 - Handled via `limitRate`, `onBackpressureDrop`
