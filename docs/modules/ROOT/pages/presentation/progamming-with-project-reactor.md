@@ -45,6 +45,8 @@
    - [Error Handling](#error-handling-1)
    - [Context Propagation](#context-propagation-in-project-reactor)
 
+9. [Links](#links)
+
 ## Core Concepts
 
 ### Operation Flow
@@ -124,15 +126,18 @@ Flux.interval(Duration.ofSeconds(1))
 ## Common Operators by Category
 ```java
 // Transformation
+// See: [map docs][map]
 map()           // 1-to-1 value change
-// Source: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#flatMap-java.util.function.Function-
-flatMap( // 1-to-N async transform
+
+// See: [flatMap docs][flatMap]
+flatMap(        // 1-to-N async transform
     Function<T,Publisher<V>> mapper,   // Transform function
     int maxConcurrent,                 // Max parallel operations
     int prefetch,                      // Elements to prefetch
     int maxBufferSize                  // Internal buffer size
 )
 
+// See: [handle docs][handle]
 handle((v,sink) -> {         // Stateful filter+map
     if (v % 2 == 0) {       // Filter condition
         sink.next(v * 2);    // Map transformation
@@ -148,18 +153,21 @@ distinct()      // remove duplicates
 
 // Combination Examples
 // 1. merge: Interleave as they arrive
+// See: [merge docs][merge]
 Flux.merge(
     Flux.just(1,2,3),
     Flux.just(4,5,6)
 ) // -> 1,4,2,5,3,6 (order not guaranteed)
 
 // 2. concat: Sequential append
+// See: [concat docs][concat]
 Flux.concat(
     Flux.just(1,2,3),
     Flux.just(4,5,6)
 ) // -> 1,2,3,4,5,6 (order guaranteed)
 
 // 3. zip: Pair by position
+// See: [zip docs][zip]
 Flux.zip(
     Flux.just("A", "B", "C"),
     Flux.just(1, 2, 3),
@@ -167,6 +175,7 @@ Flux.zip(
 ) // -> A1, B2, C3
 
 // 4. combineLatest: Latest pairs
+// See: [combineLatest docs][combine]
 Flux.combineLatest(
     Flux.just("A", "B", "C"),
     Flux.interval(Duration.ofMillis(100)),
@@ -268,6 +277,7 @@ Common async operators:
 
 ## Error Handling
 ```java
+// See: [Error Handling Guide][errors]
 // 1. Return Fallback Value
 flux.onErrorReturn(                    // Static fallback
     IllegalStateException.class,       // Only for this error
@@ -301,7 +311,7 @@ service.getData()
     .onErrorReturn(IllegalStateException.class,  // On state error
         Collections.emptyList())                 // Return empty
     .doOnError(e -> metrics.recordError(e))      // Record all errors
-    .retry(3)                                    // Retry 3 times
+    .retry(3)                                    // Retry 3 times [retry docs][retry]
 ```
 
 ## Schedulers and Threading
@@ -563,6 +573,7 @@ class RateLimiter {
 ```java
 // Batching & Buffering
 // Backpressure Strategies:
+// See: [Backpressure Guide][backpressure]
 onBackpressureBuffer(
     int maxSize,                       // Max elements to buffer
     BufferOverflowStrategy strategy    // What to do when full
@@ -594,6 +605,7 @@ Flux<Data> optimizedPrefetch(Flux<Request> reqs) {
 //   eager              // true: cleanup after complete/error
 //                      // false: cleanup after cancel
 // )
+// See: [using docs][using]
 class ResourceManagement {
     Flux<Data> withCleanup(Resource resource) {
         return Flux.using(
@@ -913,4 +925,18 @@ ctx.put("key", "value"); // Wrong!
 ```
 
 Context propagation is particularly useful in microservices architectures where you need to maintain contextual information across service boundaries and asynchronous operations. It provides a clean way to pass metadata without polluting your business logic or method signatures.
+
+# Links 
+
+[map]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#map-java.util.function.Function-
+[flatMap]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#flatMap-java.util.function.Function-
+[handle]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#handle-java.util.function.BiConsumer-
+[merge]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#merge-org.reactivestreams.Publisher...-
+[concat]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#concat-org.reactivestreams.Publisher...-
+[zip]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#zip-org.reactivestreams.Publisher-org.reactivestreams.Publisher-
+[combine]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#combineLatest-java.util.function.Function-org.reactivestreams.Publisher...-
+[errors]: https://projectreactor.io/docs/core/release/reference/#error.handling
+[retry]: https://projectreactor.io/docs/core/release/api/reactor/util/retry/Retry.html
+[backpressure]: https://projectreactor.io/docs/core/release/reference/#backpressure
+[using]: https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html#using-java.util.concurrent.Callable-java.util.function.Function-java.util.function.Consumer-
 
